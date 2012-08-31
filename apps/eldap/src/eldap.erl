@@ -67,8 +67,6 @@
 
 -behaviour(gen_fsm).
 
--include_lib("ejabberd/include/ejabberd.hrl").
-
 %% External exports
 -export([start_link/1, start_link/6]).
 
@@ -89,6 +87,7 @@
 
 -include("ELDAPv3.hrl").
 -include("eldap.hrl").
+-include("eldap_logging.hrl").
 
 -define(LDAP_VERSION, 3).
 -define(RETRY_TIMEOUT, 500).
