@@ -74,6 +74,7 @@
 		ufilter,
 		sfilter,
 		lfilter, %% Local filter (performed by ejabberd, not LDAP)
+        local_filter_attrs = undefined,
 		dn_filter,
 		dn_filter_attrs
 	       }).
@@ -340,8 +341,12 @@ is_valid_dn(DN, Attrs, State) ->
 %% {ldap_local_filter, {notequal, {"accountStatus",["disabled"]}}}
 check_local_filter(_Attrs, #state{lfilter = undefined}) ->
     true;
-check_local_filter(Attrs, #state{lfilter = LocalFilter}) ->
-    {Operation, FilterMatch} = LocalFilter,
+check_local_filter(Attrs, #state{lfilter = LocalFilters}) when is_list(LocalFilters) ->
+    lists:all(fun({Operation, FilterMatch}) ->
+                   local_filter(Operation, Attrs, FilterMatch)
+              end,
+              LocalFilters);
+check_local_filter(Attrs, {Operation, FilterMatch}) ->
     local_filter(Operation, Attrs, FilterMatch).
     
 local_filter(equal, Attrs, FilterMatch) ->
@@ -354,13 +359,14 @@ local_filter(equal, Attrs, FilterMatch) ->
 local_filter(notequal, Attrs, FilterMatch) ->
     not local_filter(equal, Attrs, FilterMatch).
 
-result_attrs(#state{uids = UIDs, dn_filter_attrs = DNFilterAttrs}) ->
+result_attrs(#state{uids = UIDs, dn_filter_attrs = DNFilterAttrs,
+                   local_filter_attrs = LFilterAttrs}) ->
     lists:foldl(
       fun({UID}, Acc) ->
 	      [UID | Acc];
 	 ({UID, _}, Acc) ->
 	      [UID | Acc]
-      end, DNFilterAttrs, UIDs).
+      end, DNFilterAttrs ++ LFilterAttrs, UIDs).
 
 %%%----------------------------------------------------------------------
 %%% Auxiliary functions
@@ -413,6 +419,7 @@ parse_options(Host) ->
 		{DNF, DNFA}
 	end,
 	LocalFilter = ejabberd_config:get_local_option({ldap_local_filter, Host}),
+    LFilterAttrs = get_lfilter_attrs(LocalFilter),
     #state{host = Host,
 	   eldap_id = Eldap_ID,
 	   bind_eldap_id = Bind_Eldap_ID,
@@ -428,6 +435,14 @@ parse_options(Host) ->
 	   ufilter = UserFilter,
 	   sfilter = SearchFilter,
 	   lfilter = LocalFilter,
+       local_filter_attrs = LFilterAttrs,
 	   dn_filter = DNFilter,
 	   dn_filter_attrs = DNFilterAttrs
 	  }.
+
+get_lfilter_attrs([]) ->
+    [];
+get_lfilter_attrs([{_, {Attr, _}}|Rest]) ->
+    [Attr | get_lfilter_attrs(Rest)];
+get_lfilter_attrs({_, {Attr, _}}) ->
+    [Attr].
