@@ -42,7 +42,6 @@
 	 monitor/1,
 	 get_sockmod/1,
 	 get_peer_certificate/1,
-	 get_verify_result/1,
 	 close/1,
 	 sockname/1, peername/1]).
 
