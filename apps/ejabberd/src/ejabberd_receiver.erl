@@ -35,7 +35,7 @@
 	 start/4,
 	 change_shaper/2,
 	 reset_stream/1,
-	 starttls/2,
+	 starttls/3,
 	 compress/2,
 	 become_controller/2,
 	 close/1]).
@@ -86,8 +86,8 @@ change_shaper(Pid, Shaper) ->
 reset_stream(Pid) ->
     gen_server:call(Pid, reset_stream).
 
-starttls(Pid, TLSSocket) ->
-    gen_server:call(Pid, {starttls, TLSSocket}).
+starttls(Pid, TCPSocket, TLSOpts) ->
+    gen_server:call(Pid, {starttls, TCPSocket, TLSOpts}).
 
 compress(Pid, ZlibSocket) ->
     gen_server:call(Pid, {compress, ZlibSocket}).
@@ -132,10 +132,12 @@ init([Socket, SockMod, Shaper, MaxStanzaSize]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({starttls, TLSSocket}, _From,
+handle_call({starttls, TCPSocket, TLSOpts}, _From,
 	    #state{xml_stream_state = XMLStreamState,
 		   c2s_pid = C2SPid,
 		   max_stanza_size = MaxStanzaSize} = State) ->
+    {ok, TLSSocket} = ssl:ssl_accept(TCPSocket, TLSOpts),
+
     close_stream(XMLStreamState),
     NewXMLStreamState = xml_stream:new(C2SPid, MaxStanzaSize),
     NewState = State#state{socket = TLSSocket,
@@ -143,9 +145,10 @@ handle_call({starttls, TLSSocket}, _From,
 			   xml_stream_state = NewXMLStreamState},
     case ssl:recv(TLSSocket, 0) of
 	{ok, TLSData} ->
-	    {reply, ok, process_data(TLSData, NewState), ?HIBERNATE_TIMEOUT};
+	    {reply, {ok, TLSSocket}, process_data(TLSData, NewState),
+             ?HIBERNATE_TIMEOUT};
 	{error, _Reason} ->
-	    {stop, normal, ok, NewState}
+	    {stop, normal, {ok, TLSSocket}, NewState}
     end;
 handle_call({compress, ZlibSocket}, _From,
 	    #state{xml_stream_state = XMLStreamState,

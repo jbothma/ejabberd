@@ -47,8 +47,6 @@
 
 -include("ejabberd.hrl").
 
--record(socket_state, {sockmod, socket, receiver}).
-
 %%====================================================================
 %% API
 %%====================================================================
@@ -134,15 +132,17 @@ connect(Addr, Port, Opts, Timeout) ->
     end.
 
 starttls(SocketData, TLSOpts) ->
-    {ok, TLSSocket} = ssl:connect(SocketData#socket_state.socket, TLSOpts),
-    ejabberd_receiver:starttls(SocketData#socket_state.receiver, TLSSocket),
-    SocketData#socket_state{socket = TLSSocket, sockmod = ssl}.
+    {ok, TLSSock} = ejabberd_receiver:starttls(SocketData#socket_state.receiver,
+                                               SocketData#socket_state.socket,
+                                               TLSOpts),
+    SocketData#socket_state{socket = TLSSock, sockmod = ssl}.
 
 starttls(SocketData, TLSOpts, Data) ->
-    {ok, TLSSocket} = ssl:connect(SocketData#socket_state.socket, TLSOpts),
-    ejabberd_receiver:starttls(SocketData#socket_state.receiver, TLSSocket),
     send(SocketData, Data),
-    SocketData#socket_state{socket = TLSSocket, sockmod = ssl}.
+    {ok, TLSSock} = ejabberd_receiver:starttls(SocketData#socket_state.receiver,
+                                               SocketData#socket_state.socket,
+                                               TLSOpts),
+    SocketData#socket_state{socket = TLSSock, sockmod = ssl}.
 
 compress(SocketData) ->
     {ok, ZlibSocket} = ejabberd_zlib:enable_zlib(

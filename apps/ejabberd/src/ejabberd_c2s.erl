@@ -1603,9 +1603,6 @@ get_auth_tags([_ | L], U, P, D, R) ->
 get_auth_tags([], U, P, D, R) ->
     {U, P, D, R}.
 
-%% Copied from ejabberd_socket.erl
--record(socket_state, {sockmod, socket, receiver}).
-
 get_conn_type(StateData) ->
     case (StateData#state.sockmod):get_sockmod(StateData#state.socket) of
     gen_tcp -> c2s;
