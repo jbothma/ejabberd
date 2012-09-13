@@ -66,7 +66,7 @@
 		tls = false,
 		tls_required = false,
 		tls_enabled = false,
-		tls_options = [connect],
+		tls_options = [],
 		authenticated = false,
 		db_enabled = true,
 		try_auth = true,
@@ -168,7 +168,7 @@ init([From, Server, Type]) ->
 		  undefined ->
 		      [connect];
 		  CertFile ->
-		      [{certfile, CertFile}, connect]
+		      [{certfile, CertFile}]
 	      end,
     {New, Verify} = case Type of
 			{new, Key} ->

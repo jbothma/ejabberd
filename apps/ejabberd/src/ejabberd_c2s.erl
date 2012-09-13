@@ -231,7 +231,7 @@ init([{SockMod, Socket}, Opts]) ->
 	lists:filter(fun({certfile, _}) -> true;
 			(_) -> false
 		     end, Opts),
-    TLSOpts = [verify_none | TLSOpts1],
+    TLSOpts = [{verify, verify_none} | TLSOpts1],
     IP = peerip(SockMod, Socket),
     %% Check if IP is blacklisted:
     case is_ip_blacklisted(IP) of
@@ -333,7 +333,7 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 				    CompressFeature =
 					case Zlib andalso
 					    ((SockMod == gen_tcp) orelse
-					     (SockMod == tls)) of
+					     (SockMod == ssl)) of
 					    true ->
 						[{xmlelement, <<"compression">>,
 						  [{<<"xmlns">>, ?NS_FEATURE_COMPRESS}],
@@ -691,7 +691,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 					  });
 	{?NS_COMPRESS_BIN, <<"compress">>} when Zlib == true,
 					((SockMod == gen_tcp) or
-					 (SockMod == tls)) ->
+					 (SockMod == ssl)) ->
 	    case xml:get_subtag(El, <<"method">>) of
 		false ->
 		    send_element(StateData,
@@ -1609,11 +1609,11 @@ get_auth_tags([], U, P, D, R) ->
 get_conn_type(StateData) ->
     case (StateData#state.sockmod):get_sockmod(StateData#state.socket) of
     gen_tcp -> c2s;
-    tls -> c2s_tls;
+    ssl -> c2s_tls;
     ejabberd_zlib ->
 	case ejabberd_zlib:get_sockmod((StateData#state.socket)#socket_state.socket) of
 	    gen_tcp -> c2s_compressed;
-	    tls -> c2s_compressed_tls
+	    ssl -> c2s_compressed_tls
 	end;
     ejabberd_http_poll -> http_poll;
     ejabberd_http_bind -> http_bind;

@@ -190,6 +190,7 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 			case (StateData#state.sockmod):get_peer_certificate(
 			       StateData#state.socket) of
 			    {ok, Cert} ->
+                                exit(not_implemented),
 				case (StateData#state.sockmod):get_verify_result(StateData#state.socket) of
 				    0 ->
 					[{xmlelement, <<"mechanisms">>,
@@ -219,15 +220,15 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 					   }]
 		       end,
 	    case SASL of
-		{error_cert_verif, CertVerifyResult, Certificate} ->
-		    CertError = tls:get_cert_verify_string(CertVerifyResult, Certificate),
-		    RemoteServer = xml:get_attr_s(<<"from">>, Attrs),
-		    ?INFO_MSG("Closing s2s connection: ~s <--> ~s (~s)", [StateData#state.server, RemoteServer, CertError]),
-		    send_text(StateData, xml:element_to_string(?SERRT_POLICY_VIOLATION(<<"en">>, CertError))),
-		    {atomic, Pid} = ejabberd_s2s:find_connection(jlib:make_jid(<<"">>, Server, <<"">>), jlib:make_jid(<<"">>, RemoteServer, <<"">>)),
-		    ejabberd_s2s_out:stop_connection(Pid),
+%		{error_cert_verif, CertVerifyResult, Certificate} ->
+%		    CertError = tls:get_cert_verify_string(CertVerifyResult, Certificate),
+%		    RemoteServer = xml:get_attr_s(<<"from">>, Attrs),
+%		    ?INFO_MSG("Closing s2s connection: ~s <--> ~s (~s)", [StateData#state.server, RemoteServer, CertError]),
+%		    send_text(StateData, xml:element_to_string(?SERRT_POLICY_VIOLATION(<<"en">>, CertError))),
+%		    {atomic, Pid} = ejabberd_s2s:find_connection(jlib:make_jid(<<"">>, Server, <<"">>), jlib:make_jid(<<"">>, RemoteServer, <<"">>)),
+%		    ejabberd_s2s_out:stop_connection(Pid),
 
-		    {stop, normal, StateData};
+%		    {stop, normal, StateData};
 		_ ->
 		    send_element(StateData,
 				 {xmlelement, <<"stream:features">>, [],

@@ -139,9 +139,9 @@ handle_call({starttls, TLSSocket}, _From,
     close_stream(XMLStreamState),
     NewXMLStreamState = xml_stream:new(C2SPid, MaxStanzaSize),
     NewState = State#state{socket = TLSSocket,
-			   sock_mod = tls,
+			   sock_mod = ssl,
 			   xml_stream_state = NewXMLStreamState},
-    case tls:recv_data(TLSSocket, "") of
+    case ssl:recv(TLSSocket, 0) of
 	{ok, TLSData} ->
 	    {reply, ok, process_data(TLSData, NewState), ?HIBERNATE_TIMEOUT};
 	{error, _Reason} ->
@@ -207,14 +207,6 @@ handle_info({Tag, _TCPSocket, Data},
 		   sock_mod = SockMod} = State)
   when (Tag == tcp) or (Tag == ssl) or (Tag == ejabberd_xml) ->
     case SockMod of
-	tls ->
-	    case tls:recv_data(Socket, Data) of
-		{ok, TLSData} ->
-		    {noreply, process_data(TLSData, State),
-		     ?HIBERNATE_TIMEOUT};
-		{error, _Reason} ->
-		    {stop, normal, State}
-	    end;
 	ejabberd_zlib ->
 	    case ejabberd_zlib:recv_data(Socket, Data) of
 		{ok, ZlibData} ->
