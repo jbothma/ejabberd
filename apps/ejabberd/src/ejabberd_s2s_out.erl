@@ -66,7 +66,7 @@
 		tls = false,
 		tls_required = false,
 		tls_enabled = false,
-		tls_options = [connect],
+		tls_options = [],
 		authenticated = false,
 		db_enabled = true,
 		try_auth = true,
@@ -155,21 +155,30 @@ stop_connection(Pid) ->
 init([From, Server, Type]) ->
     process_flag(trap_exit, true),
     ?DEBUG("started: ~p", [{From, Server, Type}]),
-    {TLS, TLSRequired} = case ejabberd_config:get_local_option(s2s_use_starttls) of
+    {TLS, TLSRequired, TLSCertVerify} =
+        case ejabberd_config:get_local_option(s2s_use_starttls) of
 	      UseTls when (UseTls==undefined) or (UseTls==false) ->
-		  {false, false};
+		  {false, false, false};
 	      UseTls when (UseTls==true) or (UseTls==optional) ->
-		  {true, false};
+		  {true, false, false};
 	      UseTls when (UseTls==required) or (UseTls==required_trusted) ->
-		  {true, true}
+		  {true, true, true}
 	  end,
     UseV10 = TLS,
-    TLSOpts = case ejabberd_config:get_local_option(s2s_certfile) of
-		  undefined ->
-		      [connect];
-		  CertFile ->
-		      [{certfile, CertFile}, connect]
-	      end,
+    TLSCertfileOpt = case ejabberd_config:get_local_option(s2s_certfile) of
+                         undefined ->
+                             [];
+                         CertFile ->
+                             [{certfile, CertFile}]
+                     end,
+    TLSCACertfile = ejabberd_config:get_local_option(cacertfile),
+    {TLSVerifyOpt, TLSCACertfileOpt} = case TLSCertVerify of
+                       false -> {[{verify, verify_none}],[]};
+                       true ->
+                           {[{verify, verify_peer}, {fail_if_no_peer_cert, true}],
+                            [{cacertfile, TLSCACertfile}]}
+                   end,
+    TLSOpts = TLSCertfileOpt ++ TLSVerifyOpt ++ TLSCACertfileOpt,
     {New, Verify} = case Type of
 			{new, Key} ->
 			    {Key, false};
@@ -645,7 +654,8 @@ wait_for_starttls_proceed({xmlstreamelement, El}, StateData) ->
 					 certfile, 1,
 					 StateData#state.tls_options)]
 			      end,
-		    TLSSocket = ejabberd_socket:starttls(Socket, TLSOpts),
+		    TLSSocket = ejabberd_socket:starttls(initiator,
+                                                         Socket, TLSOpts),
 		    NewStateData = StateData#state{socket = TLSSocket,
 						   streamid = new_id(),
 						   tls_enabled = true,
