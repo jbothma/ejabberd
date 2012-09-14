@@ -31,8 +31,8 @@
 -export([start/4,
 	 connect/3,
 	 connect/4,
-	 starttls/2,
 	 starttls/3,
+	 starttls/4,
 	 compress/1,
 	 compress/2,
 	 reset_stream/1,
@@ -131,15 +131,17 @@ connect(Addr, Port, Opts, Timeout) ->
 	    Error
     end.
 
-starttls(SocketData, TLSOpts) ->
-    {ok, TLSSock} = ejabberd_receiver:starttls(SocketData#socket_state.receiver,
+starttls(Side, SocketData, TLSOpts) ->
+    {ok, TLSSock} = ejabberd_receiver:starttls(Side,
+                                               SocketData#socket_state.receiver,
                                                SocketData#socket_state.socket,
                                                TLSOpts),
     SocketData#socket_state{socket = TLSSock, sockmod = ssl}.
 
-starttls(SocketData, TLSOpts, Data) ->
+starttls(Side, SocketData, TLSOpts, Data) ->
     send(SocketData, Data),
-    {ok, TLSSock} = ejabberd_receiver:starttls(SocketData#socket_state.receiver,
+    {ok, TLSSock} = ejabberd_receiver:starttls(Side,
+                                               SocketData#socket_state.receiver,
                                                SocketData#socket_state.socket,
                                                TLSOpts),
     SocketData#socket_state{socket = TLSSock, sockmod = ssl}.

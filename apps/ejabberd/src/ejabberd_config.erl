@@ -418,6 +418,14 @@ process_term(Term, State) ->
                         "the specified file is not readable: ",
                     throw({error, ErrorText ++ CertFile})
             end;
+        {cacertfile, CertFile} ->
+            case ejabberd_config:is_file_readable(CertFile) of
+                true -> add_option(cacertfile, CertFile, State);
+                false ->
+                    ErrorText = "There is a problem in the configuration: "
+                        "the specified file is not readable: ",
+                    throw({error, ErrorText ++ CertFile})
+            end;
         {node_type, NodeType} ->
             add_option(node_type, NodeType, State);
         {cluster_nodes, Nodes} ->

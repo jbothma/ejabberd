@@ -243,7 +243,7 @@ init([{SockMod, Socket}, Opts]) ->
 	    Socket1 =
 		if
 		    TLSEnabled ->
-			SockMod:starttls(Socket, TLSOpts);
+			SockMod:starttls(receiver, Socket, TLSOpts);
 		    true ->
 			Socket
 		end,
@@ -681,7 +681,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 		      end,
 	    Socket = StateData#state.socket,
 	    TLSSocket = (StateData#state.sockmod):starttls(
-			  Socket, TLSOpts,
+			  receiver, Socket, TLSOpts,
 			  xml:element_to_binary(
 			    {xmlelement, <<"proceed">>, [{<<"xmlns">>, ?NS_TLS}], []})),
 	    fsm_next_state(wait_for_stream,

@@ -140,7 +140,8 @@ init([{SockMod, Socket}, Opts]) ->
 		 {value, {_, S}} -> S;
 		 _ -> none
 	     end,
-    {StartTLS, TLSRequired, TLSCertverify} = case ejabberd_config:get_local_option(s2s_use_starttls) of
+    {StartTLS, TLSRequired, TLSCertverify} =
+        case ejabberd_config:get_local_option(s2s_use_starttls) of
              UseTls when (UseTls==undefined) or (UseTls==false) ->
                  {false, false, false};
              UseTls when (UseTls==true) or (UseTls==optional) ->
@@ -150,12 +151,18 @@ init([{SockMod, Socket}, Opts]) ->
              required_trusted ->
                  {true, true, true}
          end,
-    TLSOpts = case ejabberd_config:get_local_option(s2s_certfile) of
-		  undefined ->
-		      [];
-		  CertFile ->
-		      [{certfile, CertFile}]
+    TLSCertfileOpt = case ejabberd_config:get_local_option(s2s_certfile) of
+		  undefined -> [];
+		  CertFile -> [{certfile, CertFile}]
 	      end,
+    TLSCACertfile = ejabberd_config:get_local_option(cacertfile),
+    {TLSVerifyOpt, TLSCACertfileOpt} = case TLSCertverify of
+                       false -> {[{verify, verify_none}],[]};
+                       true ->
+                           {[{verify, verify_peer}, {fail_if_no_peer_cert, true}],
+                            [{cacertfile, TLSCACertfile}]}
+                   end,
+    TLSOpts = TLSCertfileOpt ++ TLSVerifyOpt ++ TLSCACertfileOpt,
     Timer = erlang:start_timer(?S2STIMEOUT, self(), []),
     {ok, wait_for_stream,
      #state{socket = Socket,
@@ -165,7 +172,7 @@ init([{SockMod, Socket}, Opts]) ->
 	    tls = StartTLS,
 	    tls_enabled = false,
 	    tls_required = TLSRequired,
-	    tls_certverify = TLSCertverify,
+            tls_certverify = TLSCertverify,
 	    tls_options = TLSOpts,
 	    timer = Timer}}.
 
@@ -186,26 +193,13 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 	    send_text(StateData, ?STREAM_HEADER(<<" version='1.0'">>)),
 	    SASL =
 		if
-		    StateData#state.tls_enabled ->
-			case (StateData#state.sockmod):get_peer_certificate(
-			       StateData#state.socket) of
-			    {ok, Cert} ->
-                                exit(not_implemented),
-				case (StateData#state.sockmod):get_verify_result(StateData#state.socket) of
-				    0 ->
-					[{xmlelement, <<"mechanisms">>,
-					  [{<<"xmlns">>, ?NS_SASL}],
-					  [{xmlelement, <<"mechanism">>, [],
-					    [{xmlcdata, <<"EXTERNAL">>}]}]}];
-				    CertVerifyRes ->
-					case StateData#state.tls_certverify of
-					    true -> {error_cert_verif, CertVerifyRes, Cert};
-					    false -> []
-					end
-				end;
-			    error ->
-				[]
-			end;
+                    %% Only offer SASL EXT. if verifying peer cert.
+		    StateData#state.tls_enabled
+                    and StateData#state.tls_certverify ->
+                        [{xmlelement, <<"mechanisms">>,
+                          [{<<"xmlns">>, ?NS_SASL}],
+                          [{xmlelement, <<"mechanism">>, [],
+                            [{xmlcdata, <<"EXTERNAL">>}]}]}];
 		    true ->
 			[]
 		end,
@@ -219,26 +213,14 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 						[{xmlelement, <<"required">>, [], []}]
 					   }]
 		       end,
-	    case SASL of
-%		{error_cert_verif, CertVerifyResult, Certificate} ->
-%		    CertError = tls:get_cert_verify_string(CertVerifyResult, Certificate),
-%		    RemoteServer = xml:get_attr_s(<<"from">>, Attrs),
-%		    ?INFO_MSG("Closing s2s connection: ~s <--> ~s (~s)", [StateData#state.server, RemoteServer, CertError]),
-%		    send_text(StateData, xml:element_to_string(?SERRT_POLICY_VIOLATION(<<"en">>, CertError))),
-%		    {atomic, Pid} = ejabberd_s2s:find_connection(jlib:make_jid(<<"">>, Server, <<"">>), jlib:make_jid(<<"">>, RemoteServer, <<"">>)),
-%		    ejabberd_s2s_out:stop_connection(Pid),
-
-%		    {stop, normal, StateData};
-		_ ->
-		    send_element(StateData,
-				 {xmlelement, <<"stream:features">>, [],
-				  SASL ++ StartTLS ++
-				  ejabberd_hooks:run_fold(
-				    s2s_stream_features,
-				    Server,
-				    [], [Server])}),
-		    {next_state, wait_for_feature_request, StateData#state{server = Server}}
-	    end;
+            send_element(StateData,
+                         {xmlelement, <<"stream:features">>, [],
+                          SASL ++ StartTLS ++
+                              ejabberd_hooks:run_fold(
+                                s2s_stream_features,
+                                Server,
+                                [], [Server])}),
+            {next_state, wait_for_feature_request, StateData#state{server = Server}};
 	{<<"jabber:server">>, _, Server, true} when
 	      StateData#state.authenticated ->
 	    send_text(StateData, ?STREAM_HEADER(<<" version='1.0'">>)),
@@ -278,7 +260,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 	{?NS_TLS, <<"starttls">>} when TLS == true,
 				   TLSEnabled == false,
 				   SockMod == gen_tcp ->
-	    ?DEBUG(<<"starttls">>, []),
+	    ?DEBUG("starttls", []),
 	    Socket = StateData#state.socket,
 	    TLSOpts = case ejabberd_config:get_local_option(
 			     {domain_certfile,
@@ -292,7 +274,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 				 StateData#state.tls_options)]
 		      end,
 	    TLSSocket = (StateData#state.sockmod):starttls(
-			  Socket, TLSOpts,
+			  receiver, Socket, TLSOpts,
 			  xml:element_to_binary(
 			    {xmlelement, <<"proceed">>, [{<<"xmlns">>, ?NS_TLS}], []})),
 	    {next_state, wait_for_stream,
@@ -304,36 +286,19 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 	{?NS_SASL, <<"auth">>} when TLSEnabled ->
 	    Mech = xml:get_attr_s(<<"mechanism">>, Attrs),
 	    case Mech of
-		<<"EXTERNAL">> ->
+		<<"EXTERNAL">> when StateData#state.tls_certverify ->
 		    Auth = jlib:decode_base64(xml:get_cdata(Els)),
 		    AuthDomain = jlib:nameprep(Auth),
 		    AuthRes =
 			case (StateData#state.sockmod):get_peer_certificate(
 			       StateData#state.socket) of
-			    {ok, Cert} ->
-				case (StateData#state.sockmod):get_verify_result(
-				       StateData#state.socket) of
-				    0 ->
-					case AuthDomain of
-					    error ->
-						false;
-					    _ ->
-						case idna:domain_utf8_to_ascii(AuthDomain) of
-						    false ->
-							false;
-						    PCAuthDomain ->
-							lists:any(
-							  fun(D) ->
-								  match_domain(
-								    PCAuthDomain, D)
-							  end, get_cert_domains(Cert))
-						end
-					end;
-				    _ ->
-					false
-				end;
-			    error ->
-				false
+			    {ok, CertBin} ->
+                                Cert = public_key:pkix_decode_cert(CertBin, plain),
+                                auth_domain_matches_cert(AuthDomain, Cert);
+                            {error, no_peercert} ->
+                                ?WARNING_MSG("no peer cert from ~p in SASL EXT",
+                                          [AuthDomain]),
+                                false
 			end,
 		    if
 			AuthRes ->
@@ -685,8 +650,22 @@ is_key_packet({xmlelement, Name, Attrs, Els}) when Name == <<"db:verify">> ->
 is_key_packet(_) ->
     false.
 
+auth_domain_matches_cert(error, _)->
+    false;
+auth_domain_matches_cert(AuthDomain, Cert) ->
+    case idna:domain_utf8_to_ascii(AuthDomain) of
+        false ->
+            false;
+        PCAuthDomain ->
+            CertDomains = get_cert_domains(Cert),
+            ?DEBUG("AuthDomain: ~p  CertDomains: ~p", [AuthDomain,CertDomains]),
+            lists:any(fun(D) ->
+                              match_domain(PCAuthDomain, D)
+                      end,
+                      CertDomains)
+    end.
 
-get_cert_domains(Cert) ->
+get_cert_domains(Cert = #'Certificate'{}) ->
     {rdnSequence, Subject} =
 	(Cert#'Certificate'.tbsCertificate)#'TBSCertificate'.subject,
     Extensions =
