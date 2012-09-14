@@ -74,16 +74,19 @@ start(Module, SockMod, Socket, Opts) ->
 	    SocketData = #socket_state{sockmod = SockMod,
 				       socket = Socket,
 				       receiver = RecRef},
-	    case Module:start({?MODULE, SocketData}, Opts) of
-		{ok, Pid} ->
-		    case SockMod:controlling_process(Socket, Receiver) of
-			ok ->
-			    ok;
-			{error, _Reason} ->
-			    SockMod:close(Socket)
-		    end,
+            %% Receiver must be controlling proc before trying to start mod
+            ControlToReceiver = SockMod:controlling_process(Socket, Receiver),
+            %% SocketData might be out of date after calling Module:start:
+            %% The support for the old tls-from-start support means ejabberd_c2s
+            %% starts ssl on the tcp connection, meaning sockmod and socket are not
+            %% do be used further.
+	    case {ControlToReceiver, Module:start({?MODULE, SocketData}, Opts)} of
+		{ok, {ok, Pid}} ->
 		    ReceiverMod:become_controller(Receiver, Pid);
-		{error, _Reason} ->
+		{ControlToReceiver, ModuleStart} ->
+                    ?DEBUG("Making receiver the controlling process: ~p~n"
+                           "Starting ~p: ~p",
+                           [ControlToReceiver, ModuleStart]),
 		    SockMod:close(Socket),
 		    case ReceiverMod of
 			ejabberd_receiver ->
