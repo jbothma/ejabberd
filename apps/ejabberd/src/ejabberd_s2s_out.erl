@@ -65,6 +65,7 @@
 		use_v10,
 		tls = false,
 		tls_required = false,
+		tls_verify = false,
 		tls_enabled = false,
 		tls_options = [],
 		authenticated = false,
@@ -75,8 +76,6 @@
 		new = false, verify = false,
 		bridge,
 		timer}).
-
-%%-define(DBGFSM, true).
 
 -ifdef(DBGFSM).
 -define(FSMOPTS, [{debug, [trace]}]).
@@ -190,6 +189,7 @@ init([From, Server, Type]) ->
     {ok, open_socket, #state{use_v10 = UseV10,
 			     tls = TLS,
 			     tls_required = TLSRequired,
+			     tls_verify = TLSCertVerify,
 			     tls_options = TLSOpts,
 			     queue = queue:new(),
 			     myname = From,
@@ -656,16 +656,38 @@ wait_for_starttls_proceed({xmlstreamelement, El}, StateData) ->
 			      end,
 		    TLSSocket = ejabberd_socket:starttls(initiator,
                                                          Socket, TLSOpts),
-		    NewStateData = StateData#state{socket = TLSSocket,
-						   streamid = new_id(),
-						   tls_enabled = true,
-						   tls_options = TLSOpts
-						  },
-		    send_text(NewStateData,
-			      io_lib:format(?STREAM_HEADER,
-					    [StateData#state.myname, StateData#state.server,
-					     <<" version='1.0'">>])),
-		    {next_state, wait_for_stream, NewStateData, ?FSMTIMEOUT};
+                    Continue =
+                        case StateData#state.tls_verify of
+                            true ->
+                                {ok, PeerCert} =
+                                    ejabberd_socket:get_peer_certificate(
+                                      TLSSocket),
+                                ejabberd_tls:domain_matches_cert(
+                                  StateData#state.server, PeerCert);
+                            false ->
+                                true
+                        end,
+                    case Continue of
+                        true ->
+		            NewStateData = StateData#state{socket = TLSSocket,
+						           streamid = new_id(),
+						           tls_enabled = true,
+						           tls_options = TLSOpts
+						           },
+		            send_text(NewStateData,
+			              io_lib:format(?STREAM_HEADER,
+					            [StateData#state.myname,
+                                                     StateData#state.server,
+                                                     <<" version='1.0'">>])),
+		            {next_state, wait_for_stream, NewStateData,
+                             ?FSMTIMEOUT};
+                        false ->
+                            ?INFO_MSG("StartTLS to ~p failed because their "
+                                      "certificate didn't match their domain.",
+                                      [StateData#state.server]),
+                            ejabberd_socket:close(TLSSocket),
+                            {stop, normal, StateData}
+                    end;
 		_ ->
 		    send_text(StateData,
 			      <<(xml:element_to_string(?SERR_BAD_FORMAT))/binary,
