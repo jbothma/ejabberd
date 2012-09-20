@@ -969,7 +969,8 @@ There are some additional global options that can be specified in the ejabberd c
   s2s connections don't use STARTTLS encryption; if STARTTLS can be used optionally;
   if STARTTLS is required to establish the connection;
   or if STARTTLS is required and the remote certificate must be valid and trusted.
-  The default value is to not use STARTTLS: \term{false}.
+  The default value is to not use STARTTLS: \term{false}. The certificate is only
+ checked for matching the domain with \term{required\_trusted}.
   \titem{\{s2s\_certfile, Path\}} \ind{options!s2s\_certificate}Full path to a
   file containing a SSL certificate.
   \titem{\{domain\_certfile, Domain, Path\}} \ind{options!domain\_certfile}
