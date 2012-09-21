@@ -594,8 +594,9 @@ wait_for_auth_result({xmlstreamelement, El}, StateData) ->
 	{xmlelement, <<"failure">>, Attrs, _Els} ->
 	    case xml:get_attr_s(<<"xmlns">>, Attrs) of
 		?NS_SASL ->
-		    ?DEBUG("restarted: ~p", [{StateData#state.myname,
-					      StateData#state.server}]),
+		    ?DEBUG("SASL EXTERNAL failed. restarted: ~p",
+                           [{StateData#state.myname,
+                             StateData#state.server}]),
 		    ejabberd_socket:close(StateData#state.socket),
 		    {next_state, reopen_socket,
 		     StateData#state{socket = undefined}, ?FSMTIMEOUT};
