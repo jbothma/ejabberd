@@ -38,6 +38,7 @@ private_key	= $dir/ca.key 	# The private key
 RANDFILE	= $dir/.rand		# private random number file
 
 x509_extensions	= usr_cert		# The extentions to add to the cert
+copy_extensions = copy                  # copy from cert request
 
 default_days	= 10950			# how long to certify for
 default_crl_days= 30			# how long before next CRL
@@ -48,6 +49,8 @@ preserve	= no			# keep passed DN ordering
 # For type CA, the listed attributes must be the same, and the optional
 # and supplied fields are just that :-)
 policy		= policy_match
+
+email_in_dn = no
 
 # For the CA policy
 [ policy_match ]
@@ -86,7 +89,7 @@ x509_extensions	= v3_ca	# The extentions to add to the self signed cert
 # MASK:XXXX a literal mask value.
 # WARNING: current versions of Netscape crash on BMPStrings or UTF8Strings
 # so use this option with caution!
-string_mask = nombstr
+string_mask = utf8only
 
 prompt = no
 
@@ -112,11 +115,11 @@ unstructuredName		= An optional company name
 # This goes against PKIX guidelines but some CAs do it and some software
 # requires this to avoid interpreting an end user certificate as a CA.
 
-basicConstraints=CA:FALSE
-
-# PKIX recommendations harmless if included in all certificates.
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer:always
+basicConstraints = CA:FALSE
+#nsCertType = server
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer:always
+#issuerAltName = issuer:copy
 
 [ v3_req ]
 

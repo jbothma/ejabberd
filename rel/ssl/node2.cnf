@@ -9,10 +9,11 @@ xmppAddr = 1.3.6.1.5.5.7.8.5
 [ req ]
 
 default_bits            = 1024
-default_keyfile         = localhost2.key
+default_keyfile         = node2.key
 distinguished_name      = distinguished_name
 req_extensions          = v3_extensions
 x509_extensions         = v3_extensions
+extensions              = v3_extensions
 
 # don't ask about the DN
 prompt = no
@@ -22,20 +23,14 @@ prompt = no
 countryName                     = GB
 stateOrProvinceName             = England
 localityName                    = Cambridge
-organizationName                = localhost2 org
-
-commonName                      = localhost2
+organizationName                = node2 org
+commonName                      = gobbledigook
 
 [ v3_extensions ]
 
-# for certificate requests (req_extensions)
-# and self-signed certificates (x509_extensions)
-
-basicConstraints                = CA:FALSE
-keyUsage                        = digitalSignature,keyEncipherment
 subjectAltName                  = @subject_alternative_name
 
 [ subject_alternative_name ]
 
 DNS.0                             = localhost2
-otherName.0                       = xmppAddr;UTF8:localhost2
+otherName.0                       = xmppAddr;FORMAT:UTF8,UTF8:michał

@@ -56,87 +56,91 @@ get_cert_domains(Cert = #'Certificate'{}) ->
 	(Cert#'Certificate'.tbsCertificate)#'TBSCertificate'.subject,
     Extensions =
 	(Cert#'Certificate'.tbsCertificate)#'TBSCertificate'.extensions,
-    lists:flatmap(
-      fun(#'AttributeTypeAndValue'{type = ?'id-at-commonName',
-				   value = Val}) ->
-	      case ?PKIXEXPLICIT:decode('X520CommonName', Val) of
-		  {ok, {_, D1}} ->
-		      D = if
-			      is_list(D1) -> list_to_binary(D1);
-			      is_binary(D1) -> D1;
-			      true -> error
-			  end,
-		      if
-			  D /= error ->
-			      case jlib:binary_to_jid(D) of
-				  #jid{luser = <<"">>,
-				       lserver = LD,
-				       lresource = <<"">>} ->
-				      [LD];
-				  _ ->
-				      []
-			      end;
-			  true ->
-			      []
-		      end;
-		  _ ->
-		      []
-	      end;
-	 (_) ->
-	      []
-      end, lists:flatten(Subject)) ++
-	lists:flatmap(
-	  fun(#'Extension'{extnID = ?'id-ce-subjectAltName',
-			   extnValue = Val}) ->
-		  BVal = if
-			     is_list(Val) -> list_to_binary(Val);
-			     is_binary(Val) -> Val;
-			     true -> Val
-			 end,
-		  case ?PKIXIMPLICIT:decode('SubjectAltName', BVal) of
-		      {ok, SANs} ->
-			  lists:flatmap(
-			    fun({otherName,
-				 #'AnotherName'{'type-id' = ?'id-on-xmppAddr',
-						value = XmppAddr
-					       }}) ->
-				    case 'XmppAddr':decode(
-					   'XmppAddr', XmppAddr) of
-					{ok, D} when is_binary(D) ->
-					    case jlib:binary_to_jid(D) of
-						#jid{luser = <<"">>,
-						     lserver = LD,
-						     lresource = <<"">>} ->
-						    case idna:domain_utf8_to_ascii(LD) of
-							false ->
-							    [];
-							PCLD ->
-							    [PCLD]
-						    end;
-						_ ->
-						    []
-					    end;
-					_ ->
-					    []
-				    end;
-			       ({dNSName, D}) when is_list(D) ->
-				    case jlib:binary_to_jid(list_to_binary(D)) of
-					#jid{luser = <<"">>,
-					     lserver = LD,
-					     lresource = <<"">>} ->
-					    [LD];
-					_ ->
-					    []
-				    end;
-			       (_) ->
-				    []
-			    end, SANs);
-		      _ ->
-			  []
-		  end;
-	     (_) ->
-		  []
-	  end, Extensions).
+    SubjectDoms = lists:flatmap(fun subject_domains/1, lists:flatten(Subject)),
+    ExtensionDoms = lists:flatmap(fun extension_domains/1, Extensions),
+    SubjectDoms ++ ExtensionDoms.
+
+subject_domains(#'AttributeTypeAndValue'{type = ?'id-at-commonName',
+                                        value = Val}) ->
+    case ?PKIXEXPLICIT:decode('X520CommonName', Val) of
+        {ok, {_, D1}} ->
+            D = if
+                    is_list(D1) -> list_to_binary(D1);
+                    is_binary(D1) -> D1;
+                    true -> error
+                end,
+            if
+                D /= error ->
+                    case jlib:binary_to_jid(D) of
+                        #jid{luser = <<"">>,
+                             lserver = LD,
+                             lresource = <<"">>} ->
+                            [LD];
+                        _ ->
+                            []
+                    end;
+                true ->
+                    []
+            end;
+        _ ->
+            []
+    end;
+subject_domains(_) ->
+    [].
+
+extension_domains(#'Extension'{extnID = ?'id-ce-subjectAltName',
+                               extnValue = Val}) ->
+    BVal = if
+               is_list(Val) -> list_to_binary(Val);
+               is_binary(Val) -> Val;
+               true -> Val
+           end,
+    case ?PKIXIMPLICIT:decode('SubjectAltName', BVal) of
+        {ok, SANs} ->
+            lists:flatmap(fun subject_alt_name_filter/1, SANs);
+        _ ->
+            []
+    end;
+extension_domains(_) ->
+		  [].
+
+subject_alt_name_filter({otherName, #'AnotherName'{'type-id' = ?'id-on-xmppAddr',
+                                                   value = XmppAddr
+                                                  }}) ->
+    case 'XmppAddr':decode('XmppAddr', XmppAddr) of
+        {ok, D} when is_binary(D) ->
+            case jlib:binary_to_jid(D) of
+                #jid{luser = <<"">>,
+                     lserver = LD,
+                     lresource = <<"">>} ->
+                    case idna:domain_utf8_to_ascii(LD) of
+                        false ->
+                            [];
+                        PCLD ->
+                            [PCLD]
+                    end;
+                _ ->
+                    []
+            end;
+        _ ->
+            []
+    end;
+subject_alt_name_filter({dNSName, D}) when is_list(D) ->
+    case jlib:binary_to_jid(list_to_binary(D)) of
+        #jid{luser = <<"">>,
+             lserver = LD,
+             lresource = <<"">>} ->
+            case idna:domain_utf8_to_ascii(LD) of
+                false ->
+                    [];
+                PCLD ->
+                    [PCLD]
+            end;
+        _ ->
+            []
+    end;
+subject_alt_name_filter(_) ->
+    [].
 
 match_domain(Domain, Domain) ->
     true;

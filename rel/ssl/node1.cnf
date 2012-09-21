@@ -3,8 +3,6 @@
 default_bits            = 1024
 default_keyfile         = node1.key
 distinguished_name      = distinguished_name
-req_extensions          = v3_extensions
-x509_extensions         = v3_extensions
 
 # don't ask about the DN
 prompt = no
@@ -14,14 +12,5 @@ prompt = no
 countryName                     = GB
 stateOrProvinceName             = England
 localityName                    = Cambridge
-organizationName                = localhost1 org
-
+organizationName                = node1 org
 commonName                      = localhost
-
-[ v3_extensions ]
-
-# for certificate requests (req_extensions)
-# and self-signed certificates (x509_extensions)
-
-basicConstraints                = CA:FALSE
-keyUsage                        = digitalSignature,keyEncipherment
