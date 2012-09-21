@@ -283,7 +283,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 	{?NS_SASL, <<"auth">>} when TLSEnabled ->
 	    Mech = xml:get_attr_s(<<"mechanism">>, Attrs),
 	    case Mech of
-		<<"EXTERNAL">> when StateData#state.tls_certverify ->
+		<<"EXTERNAL">> ->
 		    Auth = jlib:decode_base64(xml:get_cdata(Els)),
 		    AuthDomain = jlib:nameprep(Auth),
 		    AuthRes =
@@ -293,7 +293,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
                                 ejabberd_tls:domain_matches_cert(AuthDomain, Cert);
                             {error, no_peercert} ->
                                 ?WARNING_MSG("no peer cert from ~p in SASL EXT",
-                                          [AuthDomain]),
+                                             [AuthDomain]),
                                 false
 			end,
 		    if
@@ -311,6 +311,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 					     auth_domain = AuthDomain
 					    }};
 			true ->
+                            ?INFO_MSG("SASL EXTERNAL failed for ~p", [AuthDomain]),
 			    send_element(StateData,
 					 {xmlelement, <<"failure">>,
 					  [{<<"xmlns">>, ?NS_SASL}], []}),
