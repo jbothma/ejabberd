@@ -1,7 +1,5 @@
 oid_section             = new_oids
 
-#string_mask = utf8only
-
 [ new_oids ]
 
 # RFC 3920 section 5.1.1 defines this OID
@@ -26,7 +24,7 @@ countryName                     = GB
 stateOrProvinceName             = England
 localityName                    = Cambridge
 organizationName                = node2 org
-commonName                      = localhost2
+commonName                      = gobbledigook
 
 [ v3_extensions ]
 
@@ -34,5 +32,5 @@ subjectAltName                  = @subject_alternative_name
 
 [ subject_alternative_name ]
 
-DNS.0                             = michał
-#otherName.0                       = xmppAddr;UTF8:
+DNS.0                             = localhost2
+otherName.0                       = xmppAddr;FORMAT:UTF8,UTF8:michał
