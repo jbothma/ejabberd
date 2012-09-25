@@ -44,10 +44,6 @@ start(normal, _Args) ->
     db_init(),
     sha:start(),
     xml:start(),
-
-    %LogPath = get_log_path(),
-    %ok = error_logger:add_report_handler(ejabberd_logger_h, LogPath),
-
     load_drivers([expat_erl]),
     translate:start(),
     acl:start(),
@@ -57,8 +53,6 @@ start(normal, _Args) ->
     ejabberd_config:start(),
     ejabberd_check:config(),
     connect_nodes(),
-    %% Loading ASN.1 driver explicitly to avoid races in LDAP
-    catch asn1rt:load_driver(),
     {ok, _} = Sup = ejabberd_sup:start_link(),
     ejabberd_rdbms:start(),
     ejabberd_auth:start(),

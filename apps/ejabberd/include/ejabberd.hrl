@@ -24,12 +24,12 @@
 -define(VERSION, element(2, application:get_key(ejabberd,vsn))).
 
 -define(MYHOSTS, ejabberd_config:get_global_option(hosts)).
--define(MYNAME, hd(ejabberd_config:get_global_option(hosts))).
--define(MYLANG, ejabberd_config:get_global_option(language)).
+-define(MYNAME,  hd(ejabberd_config:get_global_option(hosts))).
+-define(MYLANG,  ejabberd_config:get_global_option(language)).
 
--define(MSGS_DIR, "msgs").
--define(CONFIG_PATH, "ejabberd.cfg").
--define(LOG_PATH, "ejabberd.log").
+-define(MSGS_DIR,    "msgs").
+-define(CONFIG_PATH, "etc/ejabberd.cfg").
+-define(LOG_PATH,    "log/ejabberd.log").
 
 -define(EJABBERD_URI, "http://www.process-one.net/en/ejabberd/").
 
@@ -45,19 +45,19 @@
     io:format(Format, Args)).
 
 -define(DEBUG(Format, Args),
-    ejabberd_logger:debug_msg(?MODULE,?LINE,Format, Args)).
+    lager:debug(Format, Args)).
 
 -define(INFO_MSG(Format, Args),
-    ejabberd_logger:info_msg(?MODULE,?LINE,Format, Args)).
+    lager:info(Format, Args)).
 
 -define(WARNING_MSG(Format, Args),
-    ejabberd_logger:warning_msg(?MODULE,?LINE,Format, Args)).
+    lager:warning(Format, Args)).
 
 -define(ERROR_MSG(Format, Args),
-    ejabberd_logger:error_msg(?MODULE,?LINE,Format, Args)).
+    lager:error(Format, Args)).
 
 -define(CRITICAL_MSG(Format, Args),
-    ejabberd_logger:critical_msg(?MODULE,?LINE,Format, Args)).
+    lager:critical(Format, Args)).
 
 -record(session, {sid :: tuple(),
                   usr :: {binary(), binary(), binary()},
