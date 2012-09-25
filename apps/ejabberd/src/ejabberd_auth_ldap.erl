@@ -117,7 +117,6 @@ terminate(_Reason, _State) ->
     ok.
 
 init(Host) ->
-    HostStr = binary_to_list(Host),
     State = parse_options(Host),
     eldap_pool:start_link(State#state.eldap_id,
 			  State#state.servers,

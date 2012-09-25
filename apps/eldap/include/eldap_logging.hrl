@@ -13,8 +13,17 @@
                         {line, ?LINE},
                         io_lib:format(Format, Args)])).
 
--define(DEBUG(Format, Args), ok).
--define(INFO_MSG(Format, Args), ?REPORT(info_report, 'INFO', Format, Args)).
--define(WARNING_MSG(Format, Args), ?REPORT(warning_report, 'WARNING', Format, Args)).
--define(ERROR_MSG(Format, Args), ?REPORT(error_report, 'ERROR', Format, Args)).
--define(CRITICAL_MSG(Format, Args), ?REPORT(error_report, 'CRITICAL', Format, Args)).
+-define(DEBUG(Format, Args),
+    lager:debug(Format, Args)).
+
+-define(INFO_MSG(Format, Args),
+    lager:info(Format, Args)).
+
+-define(WARNING_MSG(Format, Args),
+    lager:warning(Format, Args)).
+
+-define(ERROR_MSG(Format, Args),
+    lager:error(Format, Args)).
+
+-define(CRITICAL_MSG(Format, Args),
+    lager:critical(Format, Args)).
