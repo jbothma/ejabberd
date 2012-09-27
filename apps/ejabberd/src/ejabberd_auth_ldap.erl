@@ -238,7 +238,6 @@ check_password_ldap(User, Server, Password) ->
 
 get_vh_registered_users_ldap(Server) ->
     {ok, State} = get_state(Server),
-    UIDs = State#state.uids,
     ResAttrs = result_attrs(State),
     case eldap_filter:parse(State#state.sfilter) of
 		{ok, EldapFilter} ->
@@ -249,25 +248,7 @@ get_vh_registered_users_ldap(Server) ->
                                             {attributes, ResAttrs}]) of
 			#eldap_search_result{entries = Entries} ->
 			    lists:flatmap(
-			      fun(#eldap_entry{attributes = Attrs,
-					       object_name = DN}) ->
-				      case is_valid_dn(DN, Attrs, State) of
-					  false -> [];
-					  _ ->
-					      case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
-						  "" -> [];
-						  {User, UIDFormat} ->
-						      case eldap_utils:get_user_part(User, UIDFormat) of
-							  {ok, U} ->
-							      case jlib:nodeprep(U) of
-								  error -> [];
-								  LU -> [{LU, jlib:nameprep(Server)}]
-							      end;
-							  _ -> []
-						      end
-					      end
-				      end
-			      end, Entries);
+                              fun ldap_entry_ejabberd_user_fun/1, Entries);
 			_ ->
 			    []
 		    end;
@@ -275,8 +256,32 @@ get_vh_registered_users_ldap(Server) ->
 		    []
 	end.
 
+ldap_entry_ejabberd_user_fun({#state{
+                                 vhost=Server,
+                                 uids = UIDs
+                                } = State,
+                              #eldap_entry{
+                                 attributes = Attrs,
+                                 object_name = DN}}) ->
+    case is_valid_dn(DN, Attrs, State) of
+        false -> [];
+        _ ->
+            case ejabberd_auth_ldap_utils:find_ldap_attrs(UIDs, Attrs) of
+                "" -> [];
+                {User, UIDFormat} ->
+                    case ejabberd_auth_ldap_utils:get_user_part(User, UIDFormat) of
+                        {ok, U} ->
+                            case jlib:nodeprep(U) of
+                                error -> [];
+                                LU -> [{LU, jlib:nameprep(Server)}]
+                            end;
+                        _ -> []
+                    end
+            end
+    end.
+
 is_user_exists_ldap(User, Server) ->
-    {ok, State} = eldap_utils:get_state(Server, ?MODULE),
+    {ok, State} = get_state(Server),
     case find_user_dn(User, State) of
 		false -> false;
 		_DN -> true
@@ -322,11 +327,12 @@ is_valid_dn(DN, _, #state{dn_filter = undefined}) ->
 is_valid_dn(DN, Attrs, State) ->
     DNAttrs = State#state.dn_filter_attrs,
     UIDs = State#state.uids,
-    Values = [{"%s", eldap_utils:get_ldap_attr(Attr, Attrs), 1} || Attr <- DNAttrs],
-    SubstValues = case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
+    Values = [{"%s", ejabberd_auth_ldap_utils:get_ldap_attr(Attr, Attrs), 1}
+              || Attr <- DNAttrs],
+    SubstValues = case ejabberd_auth_ldap_utils:find_ldap_attrs(UIDs, Attrs) of
 		      "" -> Values;
 		      {S, UAF} ->
-			  case eldap_utils:get_user_part(S, UAF) of
+			  case ejabberd_auth_ldap_utils:get_user_part(S, UAF) of
 			      {ok, U} -> [{"%u", U} | Values];
 			      _ -> Values
 			  end
@@ -395,9 +401,9 @@ parse_options(Host) ->
                end,
     UIDs = case ejabberd_config:get_local_option({ldap_uids, Host}) of
                undefined -> [{"uid", "%u"}];
-               UI -> eldap_utils:uids_domain_subst(Host, UI)
+               UI -> ejabberd_auth_ldap_utils:uids_domain_subst(Host, UI)
            end,
-    SubFilter = lists:flatten(eldap_utils:generate_subfilter(UIDs)),
+    SubFilter = lists:flatten(ejabberd_auth_ldap_utils:generate_subfilter(UIDs)),
     UserFilter = case ejabberd_config:get_local_option({ldap_filter, Host}) of
                      undefined -> SubFilter;
                      "" -> SubFilter;
