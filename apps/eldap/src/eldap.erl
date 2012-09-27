@@ -68,7 +68,7 @@
 -behaviour(gen_fsm).
 
 %% External exports
--export([start_link/1, start_link/6]).
+-export([start_link/6]).
 
 -export([baseObject/0,singleLevel/0,wholeSubtree/0,close/1,
 	 equalityMatch/2,greaterOrEqual/2,lessOrEqual/2,
@@ -125,14 +125,10 @@
 %%%----------------------------------------------------------------------
 %%% API
 %%%----------------------------------------------------------------------
-start_link(Name) ->
-    Reg_name = list_to_atom("eldap_" ++ Name),
-    gen_fsm:start_link({local, Reg_name}, ?MODULE, [], []).
 
-start_link(Name, Hosts, Port, Rootdn, Passwd, Opts) ->
-    Reg_name = list_to_atom("eldap_" ++ Name),
-    gen_fsm:start_link({local, Reg_name}, ?MODULE,
-		       {Hosts, Port, Rootdn, Passwd, Opts}, []).
+start_link(RegName, Host, Port, Rootdn, Passwd, Opts) ->
+    gen_fsm:start_link({local, RegName}, ?MODULE,
+		       {Host, Port, Rootdn, Passwd, Opts}, []).
 
 %%% --------------------------------------------------------------------
 %%% Get status of connection.
@@ -422,16 +418,8 @@ get_handle(Name) when is_list(Name) -> list_to_atom("eldap_" ++ Name).
 %% I use the trick of setting a timeout of 0 to pass control into the
 %% process.      
 %%----------------------------------------------------------------------
-init([]) ->
-    case get_config() of
-	{ok, Hosts, Rootdn, Passwd, Opts} ->
-	    init({Hosts, Rootdn, Passwd, Opts});
-	{error, Reason} ->
-	    {stop, Reason}
-    end;
-init({Hosts, Port, Rootdn, Passwd, Opts}) ->
-    catch ssl:start(),
-    %ssl:seed(randoms:get_string()),
+
+init({Host, Port, Rootdn, Passwd, Opts}) ->
     Encrypt = case proplists:get_value(encrypt, Opts) of
 		  tls -> tls;
 		  _ -> none
@@ -456,7 +444,7 @@ init({Hosts, Port, Rootdn, Passwd, Opts}) ->
 		  _ ->
 		      [{verify, 0}]
 	      end,
-    {ok, connecting, #eldap{hosts = Hosts,
+    {ok, connecting, #eldap{hosts = [Host],
 			    port = PortTemp,
 			    rootdn = Rootdn,
 			    passwd = Passwd,
@@ -1074,79 +1062,6 @@ v_attributes(Attrs) ->
 	   (A) -> throw({error,concat(["attribute not String: ",A])})
 	end,
     lists:map(F,Attrs).
-
-
-%%% --------------------------------------------------------------------
-%%% Get and Validate the initial configuration
-%%% --------------------------------------------------------------------
-get_config() ->
-    Priv_dir = code:priv_dir(eldap),
-    File = filename:join(Priv_dir, "eldap.conf"),
-    case file:consult(File) of
-	{ok, Entries} ->
-	    case catch parse(Entries) of
-		{ok, Hosts, Port, Rootdn, Passwd, Opts} ->
-		    {ok, Hosts, Port, Rootdn, Passwd, Opts};
-		{error, Reason} ->
-		    {error, Reason};
-		{'EXIT', Reason} ->
-		    {error, Reason}
-	    end;
-	{error, Reason} ->
-	    {error, Reason}
-    end.
-
-parse(Entries) ->
-    {ok,
-     get_hosts(host, Entries),
-     get_integer(port, Entries),
-     get_list(rootdn, Entries),
-     get_list(passwd, Entries),
-     get_list(options, Entries)}.
-
-get_integer(Key, List) ->
-    case lists:keysearch(Key, 1, List) of
-	{value, {Key, Value}} when is_integer(Value) ->
-	    Value;
-	{value, {Key, _Value}} ->
-	    throw({error, "Bad Value in Config for " ++ atom_to_list(Key)});
-	false ->
-	    throw({error, "No Entry in Config for " ++ atom_to_list(Key)})
-    end.
-
-get_list(Key, List) ->
-    case lists:keysearch(Key, 1, List) of
-	{value, {Key, Value}} when is_list(Value) ->
-	    Value;
-	{value, {Key, _Value}} ->
-	    throw({error, "Bad Value in Config for " ++ atom_to_list(Key)});
-	false ->
-	    throw({error, "No Entry in Config for " ++ atom_to_list(Key)})
-    end.
-
-%% get_atom(Key, List) ->
-%%     case lists:keysearch(Key, 1, List) of
-%% 	{value, {Key, Value}} when is_atom(Value) ->
-%% 	    Value;
-%% 	{value, {Key, _Value}} ->
-%% 	    throw({error, "Bad Value in Config for " ++ atom_to_list(Key)});
-%% 	false ->
-%% 	    throw({error, "No Entry in Config for " ++ atom_to_list(Key)})
-%%     end.
-
-get_hosts(Key, List) ->
-    lists:map(fun({Key1, {A,B,C,D}}) when is_integer(A),
-					  is_integer(B),
-					  is_integer(C),
-					  is_integer(D),
-					  Key == Key1->
-		      {A,B,C,D};
-		 ({Key1, Value}) when is_list(Value),
-				      Key == Key1->
-		      Value;
-		 ({_Else, _Value}) ->
-		      throw({error, "Bad Hostname in config"}) 
-	      end, List).
 
 %%% --------------------------------------------------------------------
 %%% Other Stuff
