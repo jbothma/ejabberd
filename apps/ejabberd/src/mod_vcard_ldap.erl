@@ -50,7 +50,7 @@
 	]).
 
 -include("ejabberd.hrl").
--include("eldap.hrl").
+-include_lib("eldap/include/eldap.hrl").
 -include("jlib.hrl").
 
 -define(PROCNAME, ejabberd_mod_vcard_ldap).
@@ -691,20 +691,11 @@ parse_options(Host, Opts) ->
 			    ejabberd_config:get_local_option({ldap_tls_verify, Host});
 			Verify -> Verify
 		    end,
-    LDAPPortTemp = case gen_mod:get_opt(ldap_port, Opts, undefined) of
+    LDAPPort = case gen_mod:get_opt(ldap_port, Opts, undefined) of
 		       undefined ->
 			   ejabberd_config:get_local_option({ldap_port, Host});
 		       PT -> PT
 	           end,
-    LDAPPort = case LDAPPortTemp of
-		   undefined ->
-		       case LDAPEncrypt of
-			   tls -> ?LDAPS_PORT;
-			   starttls -> ?LDAP_PORT;
-			   _ -> ?LDAP_PORT
-		       end;
-		   P -> P
-	       end,
     LDAPBase = case gen_mod:get_opt(ldap_base, Opts, undefined) of
 		   undefined ->
 		       ejabberd_config:get_local_option({ldap_base, Host});
