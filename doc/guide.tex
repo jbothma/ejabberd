@@ -2234,6 +2234,12 @@ However, it is possible to change passwords if \module{mod\_register} module is 
 and LDAP server supports
 \footahref{http://tools.ietf.org/html/rfc3062}{RFC 3062}.
 
+IMPORTANT: Note that it is important to restrict the information the LDAP user
+used by \ejabberd{} has access to in your LDAP server configuration. As always, connecting to other databases might reveal more information than
+intended. For example, the ejabberd LDAP user should only have authentication
+access to passwords.
+The ejabberd LDAP user should not have read or search access to passwords or any
+other private attributes or unnecessary directories.
 
 \makesubsubsection{ldapconnection}{Connection}
 
@@ -4633,6 +4639,14 @@ Examples:
 implemented in the \modvcardldap{} module. This module does not depend on the
 authentication method (see~\ref{ldapauth}).
 
+IMPORTANT: Note that it is important to restrict the information the LDAP user
+used by \ejabberd{} has access to in your LDAP server configuration. vCards
+and especially User Directory searches might reveal more information than
+intended. For example, the ejabberd LDAP user should only have authentication
+access to passwords.
+The ejabberd LDAP user should not have read or search access to passwords or any
+other private attributes or unnecessary directories.
+
 Usually \ejabberd{} treats LDAP as a read-only storage:
 it is possible to consult data, but not possible to
 create accounts or edit vCard that is stored in LDAP.
@@ -4654,7 +4668,8 @@ consists of the following \modvcardldap{}-specific options:
 
 \begin{description}
 \hostitem{vjud}
-\iqdiscitem{\ns{vcard-temp}}
+\iqdiscitem{\ns{vcard-temp}} \term{jabber:iq:search} queries are always performed
+according to the \term{\{iqdisc, parallel\}} configuration.
 \titem{\{search, true|false\}}\ind{options!search}This option specifies whether the search
   functionality is enabled (value: \term{true}) or disabled (value:
   \term{false}). If disabled, the option \term{host} will be ignored and the
@@ -4675,13 +4690,16 @@ consists of the following \modvcardldap{}-specific options:
   \term{"\%s"} will be sequentially replaced 
   with the values of LDAP attributes from \term{List\_of\_LDAP\_attributes},
   \term{"\%u"} will be replaced with the user part of a JID, 
-  and \term{"\%d"} will be replaced with the domain part of a JID. 
+  and \term{"\%d"} will be replaced with the domain part of a JID.
+  The mapping \term{\{"PHOTO", Pattern, [AttrName]\}} is a special case, where Pattern
+  is ignored and always treated as \term{"\%s"} and the photo binary is
+  base64-encoded.
   The default is:
 \begin{verbatim}
 [{"NICKNAME", "%u", []},
  {"FN", "%s", ["displayName"]},
- {"LAST", "%s", ["sn"]},
- {"FIRST", "%s", ["givenName"]},
+ {"FAMILY", "%s", ["sn"]},
+ {"GIVEN", "%s", ["givenName"]},
  {"MIDDLE", "%s", ["initials"]},
  {"ORGNAME", "%s", ["o"]},
  {"ORGUNIT", "%s", ["ou"]},
@@ -4728,9 +4746,9 @@ consists of the following \modvcardldap{}-specific options:
   is:
 \begin{verbatim}
 [{"Full Name", "FN"},
- {"Given Name", "FIRST"},
+ {"Given Name", "GIVEN"},
  {"Middle Name", "MIDDLE"},
- {"Family Name", "LAST"},
+ {"Family Name", "FAMILY"},
  {"Nickname", "NICKNAME"},
  {"Birthday", "BDAY"},
  {"Country", "CTRY"},
@@ -4787,8 +4805,8 @@ Also we want users to search each other. Let's see how we can set it up:
     %% Now we want to define vCard pattern
     {ldap_vcard_map,
      [{"NICKNAME", "%u", []}, % just use user's part of JID as his nickname
-      {"FIRST", "%s", ["givenName"]},
-      {"LAST", "%s", ["sn"]},
+      {"GIVEN", "%s", ["givenName"]},
+      {"FAMILY", "%s", ["sn"]},
       {"FN", "%s, %s", ["sn", "givenName"]}, % example: "Smith, John"
       {"EMAIL", "%s", ["mail"]},
       {"BDAY", "%s", ["birthDay"]}]},

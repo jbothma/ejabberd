@@ -74,7 +74,7 @@
 		ufilter,
 		sfilter,
 		lfilter, %% Local filter (performed by ejabberd, not LDAP)
-        local_filter_attrs = undefined,
+                local_filter_attrs = undefined,
 		dn_filter,
 		dn_filter_attrs
 	       }).
@@ -142,12 +142,15 @@ check_password(User, Server, Password) ->
     %% In LDAP spec: empty password means anonymous authentication.
     %% As ejabberd is providing other anonymous authentication mechanisms
     %% we simply prevent the use of LDAP anonymous authentication.
-    if Password == "" ->
+    if Password == <<"">> ->
         false;
     true ->
         case catch check_password_ldap(User, Server, Password) of
-	        {'EXIT', _} -> false;
-	        Result -> Result
+            {'EXIT', _} = Err ->
+                ?ERROR_MSG("~p inside ~p:check_password/3. returning false.~n",
+                           [Err, ?MODULE]),
+                false;
+            Result -> Result
         end
     end.
 
@@ -187,7 +190,7 @@ get_password(_User, _Server) ->
     false.
 
 get_password_s(_User, _Server) ->
-    "".
+    <<"">>.
 
 %% @spec (User, Server) -> true | false | {error, Error}
 is_user_exists(User, Server) ->
@@ -239,7 +242,7 @@ get_vh_registered_users_ldap(Server) ->
 					  false -> [];
 					  _ ->
 					      case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
-						  "" -> [];
+						  <<"">> -> [];
 						  {User, UIDFormat} ->
 						      case eldap_utils:get_user_part(User, UIDFormat) of
 							  {ok, U} ->
@@ -277,14 +280,15 @@ handle_call(_Request, _From, State) ->
 
 find_user_dn(User, State) ->
     ResAttrs = result_attrs(State),
-    case eldap_filter:parse(State#state.ufilter, [{"%u", User}]) of
+    case eldap_filter:parse(State#state.ufilter, [{<<"%u">>, User}]) of
 	{ok, Filter} ->
 	    case eldap_pool:search(State#state.eldap_id,
 				   [{base, State#state.base},
 				    {filter, Filter},
 				    {attributes, ResAttrs}]) of
-		#eldap_search_result{entries = [#eldap_entry{attributes = Attrs,
-							     object_name = DN} | _]} ->
+		#eldap_search_result{
+                   entries = [#eldap_entry{attributes = Attrs,
+                                           object_name = DN} | _]} ->
 		    dn_filter(DN, Attrs, State);
 		_ ->
 		    false
@@ -308,21 +312,22 @@ is_valid_dn(DN, _, #state{dn_filter = undefined}) ->
 is_valid_dn(DN, Attrs, State) ->
     DNAttrs = State#state.dn_filter_attrs,
     UIDs = State#state.uids,
-    Values = [{"%s", eldap_utils:get_ldap_attr(Attr, Attrs), 1} || Attr <- DNAttrs],
+    Values =
+        [{<<"%s">>, eldap_utils:get_ldap_attr(Attr, Attrs), 1} || Attr <- DNAttrs],
     SubstValues = case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
-		      "" -> Values;
+		      <<"">> -> Values;
 		      {S, UAF} ->
 			  case eldap_utils:get_user_part(S, UAF) of
-			      {ok, U} -> [{"%u", U} | Values];
+			      {ok, U} -> [{<<"%u">>, U} | Values];
 			      _ -> Values
 			  end
-		  end ++ [{"%d", State#state.host}, {"%D", DN}],
+		  end ++ [{<<"%d">>, State#state.host}, {<<"%D">>, DN}],
     case eldap_filter:parse(State#state.dn_filter, SubstValues) of
 	{ok, EldapFilter} ->
 	    case eldap_pool:search(State#state.eldap_id, [
 						     {base, State#state.base},
 						     {filter, EldapFilter},
-						     {attributes, ["dn"]}]) of
+						     {attributes, [<<"dn">>]}]) of
 		#eldap_search_result{entries = [_|_]} ->
 		    DN;
 		_ ->
@@ -335,19 +340,20 @@ is_valid_dn(DN, Attrs, State) ->
 %% The local filter is used to check an attribute in ejabberd
 %% and not in LDAP to limit the load on the LDAP directory.
 %% A local rule can be either:
-%%    {equal, {"accountStatus",["active"]}}
-%%    {notequal, {"accountStatus",["disabled"]}}
-%% {ldap_local_filter, {notequal, {"accountStatus",["disabled"]}}}
+%%    {equal, {<<"accountStatus">>,[<<"active">>]}}
+%%    {notequal, {<<"accountStatus">>,[<<"disabled">>]}}
+%% {ldap_local_filter, {notequal, {<<"accountStatus">>,[<<"disabled">>]}}}
 check_local_filter(_Attrs, #state{lfilter = undefined}) ->
     true;
-check_local_filter(Attrs, #state{lfilter = LocalFilters}) when is_list(LocalFilters) ->
+check_local_filter(Attrs, #state{lfilter = LocalFilters})
+  when is_list(LocalFilters) ->
     lists:all(fun({Operation, FilterMatch}) ->
                    local_filter(Operation, Attrs, FilterMatch)
               end,
               LocalFilters);
 check_local_filter(Attrs, {Operation, FilterMatch}) ->
     local_filter(Operation, Attrs, FilterMatch).
-    
+
 local_filter(equal, Attrs, FilterMatch) ->
     {Attr, Value} = FilterMatch,
     case lists:keysearch(Attr, 1, Attrs) of
@@ -389,36 +395,42 @@ parse_options(Host) ->
 		   P -> P
 	       end,
     RootDN = case ejabberd_config:get_local_option({ldap_rootdn, Host}) of
-		 undefined -> "";
-		 RDN -> RDN
+		 undefined -> <<"">>;
+		 RDN -> list_to_binary(RDN)
 	     end,
     Password = case ejabberd_config:get_local_option({ldap_password, Host}) of
-		   undefined -> "";
-		   Pass -> Pass
+		   undefined -> <<"">>;
+		   Pass -> list_to_binary(Pass)
 	       end,
     UIDs = case ejabberd_config:get_local_option({ldap_uids, Host}) of
-	       undefined -> [{"uid", "%u"}];
-	       UI -> eldap_utils:uids_domain_subst(Host, UI)
+	       undefined -> [{<<"uid">>, <<"%u">>}];
+	       UI ->
+                   UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
+                   eldap_utils:uids_domain_subst(Host, UIBin)
 	   end,
-    SubFilter = lists:flatten(eldap_utils:generate_subfilter(UIDs)),
+    SubFilter = eldap_utils:generate_subfilter(UIDs),
     UserFilter = case ejabberd_config:get_local_option({ldap_filter, Host}) of
 		     undefined -> SubFilter;
 		     "" -> SubFilter;
-		     F -> "(&" ++ SubFilter ++ F ++ ")"
+		     F ->
+                         FBin = list_to_binary(F),
+                         <<"(&", SubFilter/binary, FBin/binary, ")">>
 		 end,
-    SearchFilter = eldap_filter:do_sub(UserFilter, [{"%u", "*"}]),
-    LDAPBase = ejabberd_config:get_local_option({ldap_base, Host}),
+    SearchFilter = eldap_filter:do_sub(UserFilter, [{<<"%u">>, <<"*">>}]),
+    LDAPBase = list_to_binary(
+                 ejabberd_config:get_local_option({ldap_base, Host})),
     {DNFilter, DNFilterAttrs} =
 	case ejabberd_config:get_local_option({ldap_dn_filter, Host}) of
 	    undefined ->
 		{undefined, []};
 	    {DNF, undefined} ->
-		{DNF, []};
+		ldap_dn_filter_to_bin({DNF, []});
 	    {DNF, DNFA} ->
-		{DNF, DNFA}
+		ldap_dn_filter_to_bin({DNF, DNFA})
 	end,
-	LocalFilter = ejabberd_config:get_local_option({ldap_local_filter, Host}),
-    LFilterAttrs = get_lfilter_attrs(LocalFilter),
+    LocalFilter = ejabberd_config:get_local_option({ldap_local_filter, Host}),
+    LocalFilterBin = ldap_local_filter_to_bin(LocalFilter),
+    LFilterAttrs = get_lfilter_attrs(LocalFilterBin),
     #state{host = Host,
 	   eldap_id = Eldap_ID,
 	   bind_eldap_id = Bind_Eldap_ID,
@@ -433,15 +445,35 @@ parse_options(Host) ->
 	   uids = UIDs,
 	   ufilter = UserFilter,
 	   sfilter = SearchFilter,
-	   lfilter = LocalFilter,
-       local_filter_attrs = LFilterAttrs,
+	   lfilter = LocalFilterBin,
+           local_filter_attrs = LFilterAttrs,
 	   dn_filter = DNFilter,
 	   dn_filter_attrs = DNFilterAttrs
 	  }.
 
+get_lfilter_attrs(undefined) ->
+    [];
 get_lfilter_attrs([]) ->
     [];
 get_lfilter_attrs([{_, {Attr, _}}|Rest]) ->
     [Attr | get_lfilter_attrs(Rest)];
 get_lfilter_attrs({_, {Attr, _}}) ->
     [Attr].
+
+ldap_uids_to_bin({Attr}) ->
+    {list_to_binary(Attr)};
+ldap_uids_to_bin({Attr, Format}) ->
+    {list_to_binary(Attr), list_to_binary(Format)}.
+
+ldap_dn_filter_to_bin({Filter, FilterAttrs}) ->
+    FilterAttrsBin = lists:map(fun erlang:list_to_binary/1, FilterAttrs),
+    {list_to_binary(Filter), FilterAttrsBin}.
+
+ldap_local_filter_to_bin(undefined) ->
+    undefined;
+ldap_local_filter_to_bin([]) ->
+    [];
+ldap_local_filter_to_bin([{Atom, {AttrName, AttrVals}}|Rest]) ->
+    AttrValsBin = lists:map(fun erlang:list_to_binary/1, AttrVals),
+    [{Atom, {list_to_binary(AttrName), AttrValsBin}}
+     | ldap_local_filter_to_bin(Rest)].

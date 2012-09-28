@@ -31,7 +31,8 @@
 -behaviour(gen_mod).
 
 %% gen_server callbacks.
--export([init/1,
+-export([start_link/2,
+	 init/1,
 	 handle_info/2,
 	 handle_call/3,
 	 handle_cast/2,
@@ -39,24 +40,30 @@
 	 code_change/3
 	]).
 
+%% gen_mod
 -export([start/2,
-	 start_link/2,
-	 stop/1,
-	 get_sm_features/5,
+	 stop/1]).
+
+%% event hooks and iq handlers
+-export([
+	 get_local_features/5,
 	 process_local_iq/3,
-	 process_sm_iq/3,
-	 remove_user/1,
-	 route/4
-	]).
+	 process_sm_iq/3
+        ]).
+
+%% for spawn. TODO: not sure why this gets spawned
+-export([
+         spawned_dir_iq/4
+        ]).
 
 -include("ejabberd.hrl").
--include("eldap.hrl").
+-include_lib("eldap/include/eldap.hrl").
 -include("jlib.hrl").
 
 -define(PROCNAME, ejabberd_mod_vcard_ldap).
 
 -record(state, {serverhost,
-		myhost,
+		directory_jid,
 		eldap_id,
 		search,
 		servers,
@@ -117,10 +124,10 @@
 
 -define(SEARCH_REPORTED,
 	[{"Full Name", "FN"},
-	 {"Given Name", "FIRST"},
+	 {"Given Name", "GIVEN"},
 	 {"Middle Name", "MIDDLE"},
-	 {"Family Name", "LAST"},
-	 {"Nickname", "NICK"},
+	 {"Family Name", "FAMILY"},
+	 {"Nickname", "NICKNAME"},
 	 {"Birthday", "BDAY"},
 	 {"Country", "CTRY"},
 	 {"City", "LOCALITY"},
@@ -129,13 +136,38 @@
 	 {"Organization Unit", "ORGUNIT"}
 	]).
 
-%% Unused callbacks.
-handle_cast(_Request, State) ->
-    {noreply, State}.
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-%% -----
+-define(LFIELD(Label, Var),
+	{xmlelement, <<"field">>, [{<<"label">>, translate:translate(Lang, Label)},
+			       {<<"var">>, Var}], []}).
 
+-define(TLFIELD(Type, Label, Var),
+	{xmlelement, <<"field">>, [{<<"type">>, Type},
+			       {<<"label">>, translate:translate(Lang, Label)},
+			       {<<"var">>, Var}], []}).
+
+-define(FORM(JID, SearchFields),
+	[{xmlelement, <<"instructions">>, [],
+	  [{xmlcdata, translate:translate(Lang, <<"You need an x:data capable client to search">>)}]},
+	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {<<"type">>, <<"form">>}],
+	  [{xmlelement, <<"title">>, [],
+	    [{xmlcdata, <<(translate:translate(Lang, <<"Search users in ">>))/binary,
+	      (jlib:jid_to_binary(JID))/binary>>}]},
+	   {xmlelement, <<"instructions">>, [],
+	    [{xmlcdata, translate:translate(Lang, <<"Fill in fields to search "
+					    "for any matching Jabber User">>)}]}
+	  ] ++ lists:map(fun({X,Y}) ->
+                                 ?TLFIELD(<<"text-single">>, X, Y)
+                         end, SearchFields)}]).
+
+-define(FIELD(Var, Val),
+	{xmlelement, <<"field">>, [{<<"var">>, Var}],
+	 [{xmlelement, <<"value">>, [],
+	   [{xmlcdata, Val}]}]}).
+
+
+%%=======================================
+%% gen_mod
+%%=======================================
 
 start(Host, Opts) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
@@ -151,17 +183,10 @@ stop(Host) ->
     supervisor:terminate_child(ejabberd_sup, Proc),
     supervisor:delete_child(ejabberd_sup, Proc).
 
-terminate(_Reason, State) ->
-    Host = State#state.serverhost,
-    gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
-    gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
-    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
-    case State#state.search of
-	true ->
-	    ejabberd_router:unregister_route(State#state.myhost);
-	_ ->
-	    ok
-    end.
+
+%%=======================================
+%% gen_server
+%%=======================================
 
 start_link(Host, Opts) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
@@ -174,7 +199,8 @@ init([Host, Opts]) ->
 				  ?MODULE, process_local_iq, IQDisc),
     gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_VCARD,
 				  ?MODULE, process_sm_iq, IQDisc),
-    ejabberd_hooks:add(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
+    ejabberd_hooks:add(
+      disco_local_features, Host, ?MODULE, get_local_features, 50),
     eldap_pool:start_link(State#state.eldap_id,
 		     State#state.servers,
 		     State#state.backups,
@@ -184,17 +210,35 @@ init([Host, Opts]) ->
 		     State#state.tls_options),
     case State#state.search of
 	true ->
-	    ejabberd_router:register_route(State#state.myhost);
+	    ejabberd_router:register_route(State#state.directory_jid);
 	_ ->
 	    ok
     end,
+    ?DEBUG("~p initial state: ~p", [?MODULE, State]),
     {ok, State}.
 
+terminate(_Reason, State) ->
+    Host = State#state.serverhost,
+    gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
+    gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
+    ejabberd_hooks:delete(
+      disco_local_features, Host, ?MODULE, get_local_features, 50),
+    case State#state.search of
+	true ->
+	    ejabberd_router:unregister_route(State#state.directory_jid);
+	_ ->
+	    ok
+    end.
+
+%%---------------------------------------
+%% ejd_router handler - directory service
+%%---------------------------------------
 handle_info({route, From, To, Packet}, State) ->
-    case catch do_route(State, From, To, Packet) of
+    case directory_iq(State, From, To, Packet) of
 	Pid when is_pid(Pid) ->
 	    ok;
-	_ ->
+	Else ->
+            ?ERROR_MSG("~p", [Else]),
 	    Err = jlib:make_error_reply(Packet, ?ERR_INTERNAL_SERVER_ERROR),
 	    ejabberd_router:route(To, From, Err)
     end,
@@ -203,51 +247,71 @@ handle_info({route, From, To, Packet}, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-get_sm_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
-    Acc;
-get_sm_features(Acc, _From, _To, Node, _Lang) ->
-    case Node of
-	[] ->
-	    case Acc of
-		{result, Features} ->
-		    {result, [?NS_VCARD | Features]};
-		empty ->
-		    {result, [?NS_VCARD]}
-	    end;
-	_ ->
-	    Acc
-    end.
+handle_call(get_state, _From, State) ->
+    {reply, {ok, State}, State};
+handle_call(stop, _From, State) ->
+    {stop, normal, ok, State};
+handle_call(_Request, _From, State) ->
+    {reply, bad_request, State}.
 
-process_local_iq(_From, _To, #iq{type = Type, lang = Lang, sub_el = SubEl} = IQ) ->
-    case Type of
-	set ->
-	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
-	get ->
-	    IQ#iq{type = result,
-		  sub_el = [{xmlelement, "vCard",
-			     [{"xmlns", ?NS_VCARD}],
-			     [{xmlelement, "FN", [],
-			       [{xmlcdata, "ejabberd"}]},
-			      {xmlelement, "URL", [],
-			       [{xmlcdata, ?EJABBERD_URI}]},
-			      {xmlelement, "DESC", [],
-			       [{xmlcdata,
-				 translate:translate(
-				   Lang,
-				   "Erlang Jabber Server") ++
-				   "\nCopyright (c) 2002-2011 ProcessOne"}]},
-			      {xmlelement, "BDAY", [],
-			       [{xmlcdata, "2002-11-16"}]}
-			     ]}]}
-    end.
+handle_cast(_Request, State) ->
+    {noreply, State}.
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
 
+
+
+%%=======================================
+%% disco_local_features event handler
+%%=======================================
+get_local_features({result, Features}, _From, _To, <<>>, _Lang) ->
+    {result, [?NS_VCARD | Features]};
+get_local_features(empty, _From, _To, <<>>, _Lang) ->
+    {result, [?NS_VCARD]};
+get_local_features(Acc, _From, _To, _Node, _Lang) ->
+    Acc.
+
+%%=======================================
+%% ejd_local NS_VCARD iq_handler
+%%=======================================
+process_local_iq(_From, _To, #iq{ type = set,
+                                  sub_el = SubEl} = IQ) ->
+    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
+process_local_iq(_From, _To, #iq{ type = get,
+                                  lang = Lang} = IQ) ->
+    IQ#iq{type = result,
+          sub_el = [{xmlelement, <<"vCard">>,
+                     [{"xmlns", ?NS_VCARD}],
+                     [{xmlelement, <<"FN">>, [],
+                       [{xmlcdata, <<"ejabberd">>}]},
+                      {xmlelement, <<"URL">>, [],
+                       [{xmlcdata, ?EJABBERD_URI}]},
+                      {xmlelement, <<"DESC">>, [],
+                       [{xmlcdata,
+                         <<(translate:translate(
+                              Lang,
+                              <<"Erlang Jabber Server">>))/binary,
+                           <<"\nCopyright (c) 2002-2011 ProcessOne">>/binary>>}]},
+                      {xmlelement, <<"BDAY">>, [],
+                       [{xmlcdata, <<"2002-11-16">>}]}
+                     ]}]}.
+
+%%=======================================
+%% ejd_sm NS_VCARD iq_handler
+%%=======================================
 process_sm_iq(_From, #jid{lserver=LServer} = To, #iq{sub_el = SubEl} = IQ) ->
-    case catch process_vcard_ldap(To, IQ, LServer) of
-	{'EXIT', _} ->
+    case process_vcard_ldap(To, IQ, LServer) of
+	{'EXIT', _} = Exit ->
+            ?ERROR_MSG("~p", [Exit]),
 	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_INTERNAL_SERVER_ERROR]};
 	Other ->
 	    Other
     end.
+
+
+%%=======================================
+%% internal
+%%=======================================
 
 process_vcard_ldap(To, IQ, Server) ->
     {ok, State} = eldap_utils:get_state(Server, ?PROCNAME),
@@ -263,29 +327,25 @@ process_vcard_ldap(To, IQ, Server) ->
 		    VCardMap = State#state.vcard_map,
 		    case find_ldap_user(LUser, State) of
 			#eldap_entry{attributes = Attributes} ->
-			    Vcard = ldap_attributes_to_vcard(Attributes, VCardMap, {LUser, LServer}),
+			    Vcard = ldap_attributes_to_vcard(
+                                      Attributes, VCardMap, {LUser, LServer}),
 			    IQ#iq{type = result, sub_el = Vcard};
 			_ ->
-			    IQ#iq{type = result, sub_el = []}
+			    IQ#iq{ type = error,
+                                   sub_el = [?ERR_SERVICE_UNAVAILABLE] }
 		    end;
 		_ ->
-		    IQ#iq{type = result, sub_el = []}
+		    IQ#iq{ type = error,
+                           sub_el = [?ERR_SERVICE_UNAVAILABLE] }
 	    end
 	end.
-
-handle_call(get_state, _From, State) ->
-    {reply, {ok, State}, State};
-handle_call(stop, _From, State) ->
-    {stop, normal, ok, State};
-handle_call(_Request, _From, State) ->
-    {reply, bad_request, State}.
 
 find_ldap_user(User, State) ->
     Base = State#state.base,
     RFC2254_Filter = State#state.user_filter,
     Eldap_ID = State#state.eldap_id,
     VCardAttrs = State#state.vcard_map_attrs,
-    case eldap_filter:parse(RFC2254_Filter, [{"%u", User}]) of
+    case eldap_filter:parse(RFC2254_Filter, [{<<"%u">>, User}]) of
 	{ok, EldapFilter} ->
 	    case eldap_pool:search(Eldap_ID, [{base, Base},
 					 {filter, EldapFilter},
@@ -300,256 +360,231 @@ find_ldap_user(User, State) ->
     end.
 
 ldap_attributes_to_vcard(Attributes, VCardMap, UD) ->
+    %% Substitute LDAP attr values according to VCardMap
     Attrs = lists:map(
-	      fun({VCardName, _, _}) ->
-		      {stringprep:tolower(VCardName),
-		       map_vcard_attr(VCardName, Attributes, VCardMap, UD)}
+	      fun({VCardField, _, _}) ->
+		      {stringprep:tolower(VCardField),
+		       map_vcard_attr(VCardField, Attributes, VCardMap, UD)}
 	      end, VCardMap),
     Elts = [ldap_attribute_to_vcard(vCard, Attr) || Attr <- Attrs],
     NElts = [ldap_attribute_to_vcard(vCardN, Attr) || Attr <- Attrs],
     OElts = [ldap_attribute_to_vcard(vCardO, Attr) || Attr <- Attrs],
     AElts = [ldap_attribute_to_vcard(vCardA, Attr) || Attr <- Attrs],
-    [{xmlelement, "vCard", [{"xmlns", ?NS_VCARD}],
+    [{xmlelement, <<"vCard">>, [{<<"xmlns">>, ?NS_VCARD}],
       lists:append([X || X <- Elts, X /= none],
-		   [{xmlelement,"N",[],   [X || X <- NElts, X /= none]},
-		    {xmlelement,"ORG",[], [X || X <- OElts, X /= none]},
-		    {xmlelement,"ADR",[], [X || X <- AElts, X /= none]}])
+		   [{xmlelement,<<"N">>,[],   [X || X <- NElts, X /= none]},
+		    {xmlelement,<<"ORG">>,[], [X || X <- OElts, X /= none]},
+		    {xmlelement,<<"ADR">>,[], [X || X <- AElts, X /= none]}])
      }].
 
-ldap_attribute_to_vcard(vCard, {"fn", Value}) ->
-    {xmlelement,"FN",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"fn">>, Value}) ->
+    {xmlelement,<<"FN">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"nickname", Value}) ->
-    {xmlelement,"NICKNAME",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"nickname">>, Value}) ->
+    {xmlelement,<<"NICKNAME">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"title", Value}) ->
-    {xmlelement,"TITLE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"title">>, Value}) ->
+    {xmlelement,<<"TITLE">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"bday", Value}) ->
-    {xmlelement,"BDAY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"bday">>, Value}) ->
+    {xmlelement,<<"BDAY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"url", Value}) ->
-    {xmlelement,"URL",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"url">>, Value}) ->
+    {xmlelement,<<"URL">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"desc", Value}) ->
-    {xmlelement,"DESC",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"desc">>, Value}) ->
+    {xmlelement,<<"DESC">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"role", Value}) ->
-    {xmlelement,"ROLE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"role">>, Value}) ->
+    {xmlelement,<<"ROLE">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"tel", Value}) ->
-    {xmlelement,"TEL",[],[{xmlelement,"VOICE",[],[]},
-			  {xmlelement,"WORK",[],[]},
-			  {xmlelement,"NUMBER",[],[{xmlcdata,Value}]}]};
+ldap_attribute_to_vcard(vCard, {<<"jabberid">>, Value}) ->
+    {xmlelement,<<"JABBERID">>,[], [{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"email", Value}) ->
-    {xmlelement,"EMAIL",[],[{xmlelement,"INTERNET",[],[]},
-			    {xmlelement,"PREF",[],[]},
-			    {xmlelement,"USERID",[],[{xmlcdata,Value}]}]};
+ldap_attribute_to_vcard(vCard, {<<"tel">>, Value}) ->
+    {xmlelement,<<"TEL">>,[], [{xmlelement,<<"NUMBER">>,[],[{xmlcdata,Value}]}]};
 
-ldap_attribute_to_vcard(vCard, {"photo", Value}) ->
-    {xmlelement,"PHOTO",[],[
-			    {xmlelement,"BINVAL",[],[{xmlcdata, jlib:encode_base64(Value)}]}]};
+ldap_attribute_to_vcard(vCard, {<<"email">>, Value}) ->
+    {xmlelement,<<"EMAIL">>,[],[{xmlelement,<<"INTERNET">>,[],[]},
+			    {xmlelement,<<"PREF">>,[],[]},
+			    {xmlelement,<<"USERID">>,[],[{xmlcdata,Value}]}]};
 
-ldap_attribute_to_vcard(vCardN, {"family", Value}) ->
-    {xmlelement,"FAMILY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"photo">>, Value}) ->
+    {xmlelement,<<"PHOTO">>,[],[
+                                {xmlelement,<<"BINVAL">>,[],[{xmlcdata, Value}]}]};
 
-ldap_attribute_to_vcard(vCardN, {"given", Value}) ->
-    {xmlelement,"GIVEN",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardN, {<<"family">>, Value}) ->
+    {xmlelement,<<"FAMILY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardN, {"middle", Value}) ->
-    {xmlelement,"MIDDLE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardN, {<<"given">>, Value}) ->
+    {xmlelement,<<"GIVEN">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardO, {"orgname", Value}) ->
-    {xmlelement,"ORGNAME",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardN, {<<"middle">>, Value}) ->
+    {xmlelement,<<"MIDDLE">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardO, {"orgunit", Value}) ->
-    {xmlelement,"ORGUNIT",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardO, {<<"orgname">>, Value}) ->
+    {xmlelement,<<"ORGNAME">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"locality", Value}) ->
-    {xmlelement,"LOCALITY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardO, {<<"orgunit">>, Value}) ->
+    {xmlelement,<<"ORGUNIT">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"street", Value}) ->
-    {xmlelement,"STREET",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"locality">>, Value}) ->
+    {xmlelement,<<"LOCALITY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"ctry", Value}) ->
-    {xmlelement,"CTRY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"street">>, Value}) ->
+    {xmlelement,<<"STREET">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"region", Value}) ->
-    {xmlelement,"REGION",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"ctry">>, Value}) ->
+    {xmlelement,<<"CTRY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"pcode", Value}) ->
-    {xmlelement,"PCODE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"region">>, Value}) ->
+    {xmlelement,<<"REGION">>,[],[{xmlcdata,Value}]};
+
+ldap_attribute_to_vcard(vCardA, {<<"pcode">>, Value}) ->
+    {xmlelement,<<"PCODE">>,[],[{xmlcdata,Value}]};
 
 ldap_attribute_to_vcard(_, _) ->
     none.
 
--define(TLFIELD(Type, Label, Var),
-	{xmlelement, "field", [{"type", Type},
-			       {"label", translate:translate(Lang, Label)},
-			       {"var", Var}], []}).
+directory_iq(State, From, To, Packet) ->
+    spawn(?MODULE, spawned_dir_iq, [State, From, To, Packet]).
 
--define(FORM(JID, SearchFields),
-	[{xmlelement, "instructions", [],
-	  [{xmlcdata, translate:translate(Lang, "You need an x:data capable client to search")}]},
-	 {xmlelement, "x", [{"xmlns", ?NS_XDATA}, {"type", "form"}],
-	  [{xmlelement, "title", [],
-	    [{xmlcdata, translate:translate(Lang, "Search users in ") ++
-	      jlib:jid_to_string(JID)}]},
-	   {xmlelement, "instructions", [],
-	    [{xmlcdata, translate:translate(Lang, "Fill in fields to search "
-					    "for any matching Jabber User")}]}
-	  ] ++ lists:map(fun({X,Y}) -> ?TLFIELD("text-single", X, Y) end, SearchFields)}]).
-
-do_route(State, From, To, Packet) ->
-    spawn(?MODULE, route, [State, From, To, Packet]).
-
-route(State, From, To, Packet) ->
-    #jid{user = User, resource = Resource} = To,
-    ServerHost = State#state.serverhost,
+spawned_dir_iq(State, From, #jid{ user = User,
+                                  resource = Resource} = To, Packet) ->
     if
-	(User /= "") or (Resource /= "") ->
+	(User /= <<>>) or (Resource /= <<>>) ->
 	    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
 	    ejabberd_router:route(To, From, Err);
 	true ->
 	    IQ = jlib:iq_query_info(Packet),
-	    case IQ of
-		#iq{type = Type, xmlns = ?NS_SEARCH, lang = Lang, sub_el = SubEl} ->
-		    case Type of
-			set ->
-			    XDataEl = find_xdata_el(SubEl),
-			    case XDataEl of
-				false ->
-				    Err = jlib:make_error_reply(
-					    Packet, ?ERR_BAD_REQUEST),
-				    ejabberd_router:route(To, From, Err);
-				_ ->
-				    XData = jlib:parse_xdata_submit(XDataEl),
-				    case XData of
-					invalid ->
-					    Err = jlib:make_error_reply(
-						    Packet,
-						    ?ERR_BAD_REQUEST),
-					    ejabberd_router:route(To, From,
-								  Err);
-					_ ->
-					    ResIQ =
-						IQ#iq{
-						  type = result,
-						  sub_el =
-						  [{xmlelement,
-						    "query",
-						    [{"xmlns", ?NS_SEARCH}],
-						    [{xmlelement, "x",
-						      [{"xmlns", ?NS_XDATA},
-						       {"type", "result"}],
-						      search_result(Lang, To, State, XData)
-						     }]}]},
-					    ejabberd_router:route(
-					      To, From, jlib:iq_to_xml(ResIQ))
-				    end
-			    end;
-			get ->
-			    SearchFields = State#state.search_fields,
-			    ResIQ = IQ#iq{type = result,
-					  sub_el = [{xmlelement,
-						     "query",
-						     [{"xmlns", ?NS_SEARCH}],
-						     ?FORM(To, SearchFields)
-						    }]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = Type, xmlns = ?NS_DISCO_INFO, lang = Lang} ->
-		    case Type of
-			set ->
-			    Err = jlib:make_error_reply(
-				    Packet, ?ERR_NOT_ALLOWED),
-			    ejabberd_router:route(To, From, Err);
-			get ->
-			    Info = ejabberd_hooks:run_fold(
-				     disco_info, ServerHost, [],
-				     [ServerHost, ?MODULE, "", ""]),
-			    ResIQ =
-				IQ#iq{type = result,
-				      sub_el = [{xmlelement,
-						 "query",
-						 [{"xmlns", ?NS_DISCO_INFO}],
-						 [{xmlelement, "identity",
-						   [{"category", "directory"},
-						    {"type", "user"},
-						    {"name",
-						     translate:translate(Lang, "vCard User Search")}],
-						   []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_SEARCH}], []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_VCARD}], []}
-						 ] ++ Info
-						}]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = Type, xmlns = ?NS_DISCO_ITEMS} ->
-		    case Type of
-			set ->
-			    Err = jlib:make_error_reply(
-				    Packet, ?ERR_NOT_ALLOWED),
-			    ejabberd_router:route(To, From, Err);
-			get ->
-			    ResIQ =
-				IQ#iq{type = result,
-				      sub_el = [{xmlelement,
-						 "query",
-						 [{"xmlns", ?NS_DISCO_ITEMS}],
-						 []}]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = get, xmlns = ?NS_VCARD, lang = Lang} ->
-		    ResIQ =
-			IQ#iq{type = result,
-			      sub_el = [{xmlelement,
-					 "vCard",
-					 [{"xmlns", ?NS_VCARD}],
-					 iq_get_vcard(Lang)}]},
-		    ejabberd_router:route(To,
-					  From,
-					  jlib:iq_to_xml(ResIQ));
-		_ ->
-		    Err = jlib:make_error_reply(Packet,
-						?ERR_SERVICE_UNAVAILABLE),
-		    ejabberd_router:route(To, From, Err)
-	    end
+            handle_dir_iq(State, From, To, Packet, IQ)
     end.
 
-iq_get_vcard(Lang) ->
-    [{xmlelement, "FN", [],
-      [{xmlcdata, "ejabberd/mod_vcard"}]},
-     {xmlelement, "URL", [],
-      [{xmlcdata, ?EJABBERD_URI}]},
-     {xmlelement, "DESC", [],
-      [{xmlcdata, translate:translate(
-		    Lang,
-		    "ejabberd vCard module") ++
-		    "\nCopyright (c) 2003-2011 ProcessOne"}]}].
+handle_dir_iq(State, From, To, Packet, IQ = #iq{type = set,
+                                                xmlns = ?NS_SEARCH,
+                                                lang = Lang,
+                                                sub_el = SubEl}) ->
+    XDataEl = find_xdata_el(SubEl),
+    case XDataEl of
+        false ->
+            Err = jlib:make_error_reply(Packet, ?ERR_BAD_REQUEST),
+            ejabberd_router:route(To, From, Err);
+        _ ->
+            XData = jlib:parse_xdata_submit(XDataEl),
+            case XData of
+                invalid ->
+                    Err = jlib:make_error_reply(Packet, ?ERR_BAD_REQUEST),
+                    ejabberd_router:route(To, From, Err);
+                _ ->
+                    %% TODO: Should possibly check that the search fields are
+                    %% among those expected and allowed.
+                    ResIQ =
+                        IQ#iq{
+                          type = result,
+                          sub_el =
+                              [{xmlelement,
+                                <<"query">>,
+                                [{<<"xmlns">>, ?NS_SEARCH}],
+                                [{xmlelement, <<"x">>,
+                                  [{<<"xmlns">>, ?NS_XDATA},
+                                   {<<"type">>, <<"result">>}],
+                                  search_result(Lang, To, State, XData)
+                                 }]}]},
+                    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ))
+            end
+    end;
 
--define(LFIELD(Label, Var),
-	{xmlelement, "field", [{"label", translate:translate(Lang, Label)},
-			       {"var", Var}], []}).
+handle_dir_iq(State, From, To, _Packet, IQ = #iq{type = get,
+                                                 xmlns = ?NS_SEARCH,
+                                                 lang = Lang}) ->
+    SearchFields = State#state.search_fields,
+    ResIQ = IQ#iq{type = result,
+                  sub_el = [{xmlelement,
+                             <<"query">>,
+                             [{<<"xmlns">>, ?NS_SEARCH}],
+                             ?FORM(To, SearchFields)
+                            }]},
+    ejabberd_router:route(To, From,jlib:iq_to_xml(ResIQ));
+
+handle_dir_iq(_State, From, To, Packet, #iq{type = set,
+                                            xmlns = ?NS_DISCO_INFO}) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
+    ejabberd_router:route(To, From, Err);
+
+handle_dir_iq(State, From, To, _Packet, IQ = #iq{type = get,
+                                                xmlns = ?NS_DISCO_INFO,
+                                                lang = Lang}) ->
+    ServerHost = State#state.serverhost,
+    Info = ejabberd_hooks:run_fold(
+             disco_info, ServerHost, [], [ServerHost, ?MODULE, "", ""]),
+    ResIQ =
+        IQ#iq{type = result,
+              sub_el = [{xmlelement,
+                         <<"query">>,
+                         [{<<"xmlns">>, ?NS_DISCO_INFO}],
+                         [{xmlelement, <<"identity">>,
+                           [{<<"category">>, <<"directory">>},
+                            {<<"type">>, <<"user">>},
+                            {<<"name">>,
+                             translate:translate(Lang, <<"vCard User Search">>)}],
+                           []},
+                          {xmlelement, <<"feature">>,
+                           [{<<"var">>, ?NS_SEARCH}], []},
+                          {xmlelement, <<"feature">>,
+                           [{<<"var">>, ?NS_VCARD}], []}
+                         ] ++ Info
+                        }]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+handle_dir_iq(_State, From, To, Packet, #iq{type = set,
+                                            xmlns = ?NS_DISCO_ITEMS}) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
+    ejabberd_router:route(To, From, Err);
+
+handle_dir_iq(_State, From, To, _Packet, IQ = #iq{type = get,
+                                                  xmlns = ?NS_DISCO_ITEMS}) ->
+    ResIQ = IQ#iq{type = result,
+                  sub_el = [{xmlelement,
+                             <<"query">>,
+                             [{<<"xmlns">>, ?NS_DISCO_ITEMS}],
+                             []}]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+handle_dir_iq(_State, From, To, _Packet, IQ = #iq{type = get,
+                                                  xmlns = ?NS_VCARD,
+                                                  lang = Lang}) ->
+    ResIQ = IQ#iq{type = result,
+                  sub_el = [{xmlelement,
+                             <<"vCard">>,
+                             [{<<"xmlns">>, ?NS_VCARD}],
+                             directory_service_vcard(Lang)}]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+handle_dir_iq(_State, From, To, Packet, _) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
+    ejabberd_router:route(To, From, Err).
+
+
+directory_service_vcard(Lang) ->
+    [{xmlelement, <<"FN">>, [],
+      [{xmlcdata, <<"ejabberd/mod_vcard">>}]},
+     {xmlelement, <<"URL">>, [],
+      [{xmlcdata, ?EJABBERD_URI}]},
+     {xmlelement, <<"DESC">>, [],
+      [{xmlcdata, <<(translate:translate(
+                       Lang,
+                       <<"ejabberd vCard module">>))/binary,
+		    <<"\nCopyright (c) 2003-2011 ProcessOne">>/binary>>}]}].
 
 search_result(Lang, JID, State, Data) ->
     SearchReported = State#state.search_reported,
-    Header = [{xmlelement, "title", [],
-	       [{xmlcdata, translate:translate(Lang, "Search Results for ") ++
-		 jlib:jid_to_string(JID)}]},
-	      {xmlelement, "reported", [],
-	       [?TLFIELD("text-single", "Jabber ID", "jid")] ++
+    Header = [{xmlelement, <<"title">>, [],
+	       [{xmlcdata, <<(translate:translate(Lang, <<"Search Results for ">>))/binary,
+		 (jlib:jid_to_binary(JID))/binary>>}]},
+	      {xmlelement, <<"reported">>, [],
+	       [?TLFIELD(<<"jid-single">>, <<"Jabber ID">>, <<"jid">>)] ++
 	       lists:map(
-		 fun({Name, Value}) -> ?TLFIELD("text-single", Name, Value) end,
+		 fun({Name, Value}) -> ?TLFIELD(<<"text-single">>, Name, Value) end,
 		 SearchReported)
 	      }],
     case search(State, Data) of
@@ -558,11 +593,6 @@ search_result(Lang, JID, State, Data) ->
 	Result ->
 	    Header ++ Result
     end.
-
--define(FIELD(Var, Val),
-	{xmlelement, "field", [{"var", Var}],
-	 [{xmlelement, "value", [],
-	   [{xmlcdata, Val}]}]}).
 
 search(State, Data) ->
     Base = State#state.base,
@@ -586,67 +616,79 @@ search_items(Entries, State) ->
     LServer = State#state.serverhost,
     SearchReported = State#state.search_reported,
     VCardMap = State#state.vcard_map,
-	UIDs = State#state.uids,
-    Attributes = lists:map(
-		   fun(E) ->
-			   #eldap_entry{attributes = Attrs} = E,
-			   Attrs
-		   end, Entries),
+    UIDs = State#state.uids,
+    AttributeLists = lists:map(
+                       fun(#eldap_entry{attributes = Attrs}) -> Attrs end,
+                       Entries),
     lists:flatmap(
       fun(Attrs) ->
-	      case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
-	      {U, UIDAttrFormat} ->
-	          case eldap_utils:get_user_part(U, UIDAttrFormat) of
-		      {ok, Username} ->
-		          case ejabberd_auth:is_user_exists(Username, LServer) of
-			      true ->
-			        RFields = lists:map(
-					  fun({_, VCardName}) ->
-						  {VCardName,
-						   map_vcard_attr(
-						     VCardName,
-						     Attrs,
-						     VCardMap,
-						     {Username, ?MYNAME})}
-					  end, SearchReported),
-			        Result = [?FIELD("jid", Username ++ "@" ++ LServer)] ++
-				    [?FIELD(Name, Value) || {Name, Value} <- RFields],
-			        [{xmlelement, "item", [], Result}];
-			      _ ->
-			          []
-		          end;
-		      _ ->
-		         []
-	          end;
-          "" ->
-		      []
-		  end
-      end, Attributes).
+              attr_list_to_search_item(Attrs,UIDs,VCardMap,SearchReported,LServer)
+      end, AttributeLists).
 
-remove_user(_User) ->
-    true.
+attr_list_to_search_item(Attrs, UIDs, VCardMap, SearchReported, LServer) ->
+    case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
+        {U, UIDAttrFormat} ->
+            case eldap_utils:get_user_part(U, UIDAttrFormat) of
+                {ok, Username} ->
+                    case ejabberd_auth:is_user_exists(Username, LServer) of
+                        true ->
+                            RFields = lists:map(
+                                        fun({_, VCardName}) ->
+                                                {VCardName,
+                                                 map_vcard_attr(
+                                                   VCardName,
+                                                   Attrs,
+                                                   VCardMap,
+                                                   {Username, ?MYNAME})}
+                                        end, SearchReported),
+                            JIDFieldEl =
+                                ?FIELD(<<"jid">>,
+                                       <<Username/binary, "@", LServer/binary>>),
+                            RFieldEls =
+                                [?FIELD(Name, Value) || {Name, Value} <- RFields],
+                            Result = [JIDFieldEl | RFieldEls],
+                            [{xmlelement, <<"item">>, [], Result}];
+                        _ ->
+                            []
+                    end;
+                _ ->
+                    []
+            end;
+        <<"">> ->
+            []
+    end.
 
 %%%-----------------------
 %%% Auxiliary functions.
 %%%-----------------------
 
-map_vcard_attr(VCardName, Attributes, Pattern, UD) ->
+%% UD is {user, domain}
+map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
+    %% find the VCardMap definition for the current vCard field
     Res = lists:filter(
 	    fun({Name, _, _}) ->
-		    eldap_utils:case_insensitive_match(Name, VCardName)
-	    end, Pattern),
+		    eldap_utils:case_insensitive_match(Name, VCardField)
+	    end, VCardMap),
     case Res of
-	[{_, Str, Attrs}] ->
-	    process_pattern(Str, UD,
-			    [eldap_utils:get_ldap_attr(X, Attributes) || X<-Attrs]);
-	_ -> ""
+        %% Hack to treat PHOTO binary data specially.
+        %% Effectively hardcode vCard PHOTO replacement pattern as
+        %% {"PHOTO", "%s", [PhotoAttr | IgnoredAttrs ]} because actually
+        %% replacing a photo is too expensive via eldap_filter -> re
+        %% Too expensive here means a 40k jpeg took 3.7 seconds to replace.
+	[{<<"PHOTO">>, _, [LDAPAttrName|_]}] ->
+            JpegBinByteList = eldap_utils:get_ldap_attr(LDAPAttrName, Attributes),
+            base64:encode(JpegBinByteList);
+	[{_, VCardFieldTemplate, LDAPAttrNames}] ->
+            LDAPAttrVals = [eldap_utils:get_ldap_attr(LDAPAttrName, Attributes)
+                            || LDAPAttrName <- LDAPAttrNames],
+	    process_pattern(VCardFieldTemplate, UD, LDAPAttrVals);
+	_ -> <<"">>
     end.
 
-process_pattern(Str, {User, Domain}, AttrValues) ->
-    eldap_filter:do_sub(
-      Str,
-      [{"%u", User},{"%d", Domain}] ++
-      [{"%s", V, 1} || V <- AttrValues]).
+process_pattern(VCardFieldTemplate, {User, Domain}, AttrValues) ->
+    StringSubTups = [{<<"%s">>, Value, 1} || Value <- AttrValues],
+    SubTuples = [{<<"%u">>, User}, {<<"%d">>, Domain}] ++ StringSubTups,
+    eldap_filter:do_sub(VCardFieldTemplate, SubTuples).
 
 find_xdata_el({xmlelement, _Name, _Attrs, SubEls}) ->
     find_xdata_el1(SubEls).
@@ -654,7 +696,7 @@ find_xdata_el({xmlelement, _Name, _Attrs, SubEls}) ->
 find_xdata_el1([]) ->
     false;
 find_xdata_el1([{xmlelement, Name, Attrs, SubEls} | Els]) ->
-    case xml:get_attr_s("xmlns", Attrs) of
+    case xml:get_attr_s(<<"xmlns">>, Attrs) of
 	?NS_XDATA ->
 	    {xmlelement, Name, Attrs, SubEls};
 	_ ->
@@ -664,7 +706,7 @@ find_xdata_el1([_ | Els]) ->
     find_xdata_el1(Els).
 
 parse_options(Host, Opts) ->
-    MyHost = gen_mod:get_opt_host(Host, Opts, "vjud.@HOST@"),
+    DirectoryJID = gen_mod:get_opt_host(Host, Opts, "vjud.@HOST@"),
     Search = gen_mod:get_opt(search, Opts, true),
     Matches = case gen_mod:get_opt(matches, Opts, 30) of
 		infinity  -> 0;
@@ -691,81 +733,80 @@ parse_options(Host, Opts) ->
 			    ejabberd_config:get_local_option({ldap_tls_verify, Host});
 			Verify -> Verify
 		    end,
-    LDAPPortTemp = case gen_mod:get_opt(ldap_port, Opts, undefined) of
+    LDAPPort = case gen_mod:get_opt(ldap_port, Opts, undefined) of
 		       undefined ->
 			   ejabberd_config:get_local_option({ldap_port, Host});
 		       PT -> PT
 	           end,
-    LDAPPort = case LDAPPortTemp of
-		   undefined ->
-		       case LDAPEncrypt of
-			   tls -> ?LDAPS_PORT;
-			   starttls -> ?LDAP_PORT;
-			   _ -> ?LDAP_PORT
-		       end;
-		   P -> P
-	       end,
     LDAPBase = case gen_mod:get_opt(ldap_base, Opts, undefined) of
 		   undefined ->
-		       ejabberd_config:get_local_option({ldap_base, Host});
-		   B -> B
+                       list_to_binary(
+                         ejabberd_config:get_local_option({ldap_base, Host}));
+		   B -> list_to_binary(B)
 	       end,
 	UIDs = case gen_mod:get_opt(ldap_uids, Opts, undefined) of
 	    undefined ->
 		    case ejabberd_config:get_local_option({ldap_uids, Host}) of
-			undefined -> [{"uid", "%u"}];
-			UI -> eldap_utils:uids_domain_subst(Host, UI)
+			undefined -> [{<<"uid">>, <<"%u">>}];
+			UI ->
+                            UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
+                            eldap_utils:uids_domain_subst(Host, UIBin)
 			end;
-		UI -> eldap_utils:uids_domain_subst(Host, UI)
+		UI ->
+                       UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
+                       eldap_utils:uids_domain_subst(Host, UIBin)
 		end,
     RootDN = case gen_mod:get_opt(ldap_rootdn, Opts, undefined) of
 		 undefined ->
 		     case ejabberd_config:get_local_option({ldap_rootdn, Host}) of
-			 undefined -> "";
-			 RDN -> RDN
+			 undefined -> <<"">>;
+			 RDN -> list_to_binary(RDN)
 		     end;
 		 RDN -> RDN
 	     end,
     Password = case gen_mod:get_opt(ldap_password, Opts, undefined) of
 		   undefined ->
-		       case ejabberd_config:get_local_option({ldap_password, Host}) of
-			   undefined -> "";
+		       case ejabberd_config:get_local_option(
+                              {ldap_password, Host}) of
+			   undefined -> <<"">>;
 			   Pass -> Pass
 		       end;
 		   Pass -> Pass
 	       end,
-    SubFilter = lists:flatten(eldap_utils:generate_subfilter(UIDs)),
-    UserFilter = case gen_mod:get_opt(ldap_filter, Opts, undefined) of
-		     undefined ->
-			 case ejabberd_config:get_local_option({ldap_filter, Host}) of
-			     undefined -> SubFilter;
-			     "" -> SubFilter;
-			     F -> "(&" ++ SubFilter ++ F ++ ")"
-			 end;
-		     "" -> SubFilter;
-		     F -> "(&" ++ SubFilter ++ F ++ ")"
-		 end,
+    SubFilter = eldap_utils:generate_subfilter(UIDs),
+    RFC4515Filt = gen_mod:get_opt(
+                      ldap_filter, Opts, ejabberd_config:get_local_option(
+                                           {ldap_filter, Host})),
+    UserFilter = case RFC4515Filt of
+                     undefined -> SubFilter;
+                     "" -> SubFilter;
+                     F ->
+                         <<"(&",SubFilter/binary,(list_to_binary(F))/binary,")">>
+                 end,
     {ok, SearchFilter} = eldap_filter:parse(
-			   eldap_filter:do_sub(UserFilter, [{"%u","*"}])),
+			   eldap_filter:do_sub(UserFilter, [{<<"%u">>,<<"*">>}])),
     VCardMap = gen_mod:get_opt(ldap_vcard_map, Opts, ?VCARD_MAP),
+    VCardMapBin = vcard_map_to_bin(VCardMap),
     SearchFields = gen_mod:get_opt(ldap_search_fields, Opts, ?SEARCH_FIELDS),
+    SearchFieldsBin = search_fields_to_bin(SearchFields),
     SearchReported = gen_mod:get_opt(ldap_search_reported, Opts, ?SEARCH_REPORTED),
+    SearchReportedBin = search_fields_to_bin(SearchReported),
     %% In search requests we need to fetch only attributes defined
     %% in vcard-map and search-reported. In some cases,
     %% this will essentially reduce network traffic from an LDAP server.
 	UIDAttrs = [UAttr || {UAttr, _} <- UIDs],
     VCardMapAttrs = lists:usort(
-		      lists:append([A || {_, _, A} <- VCardMap]) ++ UIDAttrs),
+		      lists:append([A || {_, _, A} <- VCardMapBin]) ++ UIDAttrs),
     SearchReportedAttrs =
 	lists:usort(lists:flatmap(
 		      fun({_, N}) ->
-			      case lists:keysearch(N, 1, VCardMap) of
+			      case lists:keysearch(N, 1, VCardMapBin) of
 				  {value, {_, _, L}} -> L;
 				  _ -> []
 			      end
-		      end, SearchReported) ++ UIDAttrs),
+		      end, SearchReportedBin) ++ UIDAttrs),
     #state{serverhost = Host,
-	   myhost = MyHost,
+	   directory_jid = DirectoryJID,
 	   eldap_id = Eldap_ID,
 	   search = Search,
 	   servers = LDAPServers,
@@ -777,12 +818,30 @@ parse_options(Host, Opts) ->
 	   base = LDAPBase,
 	   password = Password,
 	   uids = UIDs,
-	   vcard_map = VCardMap,
+	   vcard_map = VCardMapBin,
 	   vcard_map_attrs = VCardMapAttrs,
 	   user_filter = UserFilter,
 	   search_filter = SearchFilter,
-	   search_fields = SearchFields,
-	   search_reported = SearchReported,
+	   search_fields = SearchFieldsBin,
+	   search_reported = SearchReportedBin,
 	   search_reported_attrs = SearchReportedAttrs,
 	   matches = Matches
 	  }.
+
+ldap_uids_to_bin({Attr}) ->
+    {list_to_binary(Attr)};
+ldap_uids_to_bin({Attr, Format}) ->
+    {list_to_binary(Attr), list_to_binary(Format)}.
+
+vcard_map_to_bin([]) ->
+    [];
+vcard_map_to_bin([{VCField, Pattern, LDAPAttrNames}|Rest]) ->
+    VCFieldBin = list_to_binary(VCField),
+    PatternBin = list_to_binary(Pattern),
+    LDAPAttrNameBins = lists:map(fun erlang:list_to_binary/1, LDAPAttrNames),
+    [{VCFieldBin, PatternBin, LDAPAttrNameBins}|vcard_map_to_bin(Rest)].
+
+search_fields_to_bin([]) ->
+    [];
+search_fields_to_bin([{FieldHead, Var}|Rest]) ->
+    [{list_to_binary(FieldHead),list_to_binary(Var)}|search_fields_to_bin(Rest)].
