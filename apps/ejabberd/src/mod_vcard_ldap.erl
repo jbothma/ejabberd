@@ -188,10 +188,11 @@ init([Host, Opts]) ->
 	_ ->
 	    ok
     end,
+    ?DEBUG("~p initial state: ~p", [?MODULE, State]),
     {ok, State}.
 
 handle_info({route, From, To, Packet}, State) ->
-    case catch do_route(State, From, To, Packet) of
+    case do_route(State, From, To, Packet) of
 	Pid when is_pid(Pid) ->
 	    ok;
 	_ ->
@@ -242,7 +243,7 @@ process_local_iq(_From, _To, #iq{type = Type, lang = Lang, sub_el = SubEl} = IQ)
     end.
 
 process_sm_iq(_From, #jid{lserver=LServer} = To, #iq{sub_el = SubEl} = IQ) ->
-    case catch process_vcard_ldap(To, IQ, LServer) of
+    case process_vcard_ldap(To, IQ, LServer) of
 	{'EXIT', _} ->
 	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_INTERNAL_SERVER_ERROR]};
 	Other ->
@@ -300,6 +301,7 @@ find_ldap_user(User, State) ->
     end.
 
 ldap_attributes_to_vcard(Attributes, VCardMap, UD) ->
+    ?DEBUG("ldap_attributes_to_vcard(~p, ~p, ~p)",[Attributes, VCardMap, UD]),
     Attrs = lists:map(
 	      fun({VCardName, _, _}) ->
 		      {stringprep:tolower(VCardName),
@@ -316,83 +318,83 @@ ldap_attributes_to_vcard(Attributes, VCardMap, UD) ->
 		    {xmlelement,"ADR",[], [X || X <- AElts, X /= none]}])
      }].
 
-ldap_attribute_to_vcard(vCard, {"fn", Value}) ->
-    {xmlelement,"FN",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"fn">>, Value}) ->
+    {xmlelement,<<"FN">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"nickname", Value}) ->
-    {xmlelement,"NICKNAME",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"nickname">>, Value}) ->
+    {xmlelement,<<"NICKNAME">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"title", Value}) ->
-    {xmlelement,"TITLE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"title">>, Value}) ->
+    {xmlelement,<<"TITLE">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"bday", Value}) ->
-    {xmlelement,"BDAY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"bday">>, Value}) ->
+    {xmlelement,<<"BDAY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"url", Value}) ->
-    {xmlelement,"URL",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"url">>, Value}) ->
+    {xmlelement,<<"URL">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"desc", Value}) ->
-    {xmlelement,"DESC",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"desc">>, Value}) ->
+    {xmlelement,<<"DESC">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"role", Value}) ->
-    {xmlelement,"ROLE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCard, {<<"role">>, Value}) ->
+    {xmlelement,<<"ROLE">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCard, {"tel", Value}) ->
-    {xmlelement,"TEL",[],[{xmlelement,"VOICE",[],[]},
-			  {xmlelement,"WORK",[],[]},
-			  {xmlelement,"NUMBER",[],[{xmlcdata,Value}]}]};
+ldap_attribute_to_vcard(vCard, {<<"tel">>, Value}) ->
+    {xmlelement,<<"TEL">>,[],[{xmlelement,<<"VOICE">>,[],[]},
+			  {xmlelement,<<"WORK">>,[],[]},
+			  {xmlelement,<<"NUMBER">>,[],[{xmlcdata,Value}]}]};
 
-ldap_attribute_to_vcard(vCard, {"email", Value}) ->
-    {xmlelement,"EMAIL",[],[{xmlelement,"INTERNET",[],[]},
-			    {xmlelement,"PREF",[],[]},
-			    {xmlelement,"USERID",[],[{xmlcdata,Value}]}]};
+ldap_attribute_to_vcard(vCard, {<<"email">>, Value}) ->
+    {xmlelement,<<"EMAIL">>,[],[{xmlelement,<<"INTERNET">>,[],[]},
+			    {xmlelement,<<"PREF">>,[],[]},
+			    {xmlelement,<<"USERID">>,[],[{xmlcdata,Value}]}]};
 
-ldap_attribute_to_vcard(vCard, {"photo", Value}) ->
-    {xmlelement,"PHOTO",[],[
+ldap_attribute_to_vcard(vCard, {<<"photo">>, Value}) ->
+    {xmlelement,<<"PHOTO">>,[],[
 			    {xmlelement,"BINVAL",[],[{xmlcdata, jlib:encode_base64(Value)}]}]};
 
-ldap_attribute_to_vcard(vCardN, {"family", Value}) ->
-    {xmlelement,"FAMILY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardN, {<<"family">>, Value}) ->
+    {xmlelement,<<"FAMILY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardN, {"given", Value}) ->
-    {xmlelement,"GIVEN",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardN, {<<"given">>, Value}) ->
+    {xmlelement,<<"GIVEN">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardN, {"middle", Value}) ->
-    {xmlelement,"MIDDLE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardN, {<<"middle">>, Value}) ->
+    {xmlelement,<<"MIDDLE">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardO, {"orgname", Value}) ->
-    {xmlelement,"ORGNAME",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardO, {<<"orgname">>, Value}) ->
+    {xmlelement,<<"ORGNAME">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardO, {"orgunit", Value}) ->
-    {xmlelement,"ORGUNIT",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardO, {<<"orgunit">>, Value}) ->
+    {xmlelement,<<"ORGUNIT">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"locality", Value}) ->
-    {xmlelement,"LOCALITY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"locality">>, Value}) ->
+    {xmlelement,<<"LOCALITY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"street", Value}) ->
-    {xmlelement,"STREET",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"street">>, Value}) ->
+    {xmlelement,<<"STREET">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"ctry", Value}) ->
-    {xmlelement,"CTRY",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"ctry">>, Value}) ->
+    {xmlelement,<<"CTRY">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"region", Value}) ->
-    {xmlelement,"REGION",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"region">>, Value}) ->
+    {xmlelement,<<"REGION">>,[],[{xmlcdata,Value}]};
 
-ldap_attribute_to_vcard(vCardA, {"pcode", Value}) ->
-    {xmlelement,"PCODE",[],[{xmlcdata,Value}]};
+ldap_attribute_to_vcard(vCardA, {<<"pcode">>, Value}) ->
+    {xmlelement,<<"PCODE">>,[],[{xmlcdata,Value}]};
 
 ldap_attribute_to_vcard(_, _) ->
     none.
 
 -define(TLFIELD(Type, Label, Var),
-	{xmlelement, "field", [{"type", Type},
-			       {"label", translate:translate(Lang, Label)},
-			       {"var", Var}], []}).
+	{xmlelement, <<"field">>, [{<<"type">>, Type},
+			       {<<"label">>, translate:translate(Lang, Label)},
+			       {<<"var">>, Var}], []}).
 
 -define(FORM(JID, SearchFields),
-	[{xmlelement, "instructions", [],
+	[{xmlelement, <<"instructions">>, [],
 	  [{xmlcdata, translate:translate(Lang, "You need an x:data capable client to search")}]},
-	 {xmlelement, "x", [{"xmlns", ?NS_XDATA}, {"type", "form"}],
+	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {"type", "form"}],
 	  [{xmlelement, "title", [],
 	    [{xmlcdata, translate:translate(Lang, "Search users in ") ++
 	      jlib:jid_to_string(JID)}]},
