@@ -367,9 +367,7 @@ ldap_attribute_to_vcard(vCard, {<<"role">>, Value}) ->
     {xmlelement,<<"ROLE">>,[],[{xmlcdata,Value}]};
 
 ldap_attribute_to_vcard(vCard, {<<"tel">>, Value}) ->
-    {xmlelement,<<"TEL">>,[],[{xmlelement,<<"VOICE">>,[],[]},
-			  {xmlelement,<<"WORK">>,[],[]},
-			  {xmlelement,<<"NUMBER">>,[],[{xmlcdata,Value}]}]};
+    {xmlelement,<<"TEL">>,[], [{xmlelement,<<"NUMBER">>,[],[{xmlcdata,Value}]}]};
 
 ldap_attribute_to_vcard(vCard, {<<"email">>, Value}) ->
     {xmlelement,<<"EMAIL">>,[],[{xmlelement,<<"INTERNET">>,[],[]},
