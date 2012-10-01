@@ -78,41 +78,41 @@
 	       }).
 
 -define(VCARD_MAP,
-	[{"NICKNAME", "%u", []},
-	 {"FN", "%s", ["displayName"]},
-	 {"FAMILY", "%s", ["sn"]},
-	 {"GIVEN", "%s", ["givenName"]},
-	 {"MIDDLE", "%s", ["initials"]},
-	 {"ORGNAME", "%s", ["o"]},
-	 {"ORGUNIT", "%s", ["ou"]},
-	 {"CTRY", "%s", ["c"]},
-	 {"LOCALITY", "%s", ["l"]},
-	 {"STREET", "%s", ["street"]},
-	 {"REGION", "%s", ["st"]},
-	 {"PCODE", "%s", ["postalCode"]},
-	 {"TITLE", "%s", ["title"]},
-	 {"URL", "%s", ["labeleduri"]},
-	 {"DESC", "%s", ["description"]},
-	 {"TEL", "%s", ["telephoneNumber"]},
-	 {"EMAIL", "%s", ["mail"]},
-	 {"BDAY", "%s", ["birthDay"]},
-	 {"ROLE", "%s", ["employeeType"]},
-	 {"PHOTO", "%s", ["jpegPhoto"]}
+	[{<<"NICKNAME">>, "%u", []},
+	 {<<"FN">>, "%s", [<<"displayName">>]},
+	 {<<"FAMILY">>, "%s", [<<"sn">>]},
+	 {<<"GIVEN">>, "%s", [<<"givenName">>]},
+	 {<<"MIDDLE">>, "%s", [<<"initials">>]},
+	 {<<"ORGNAME">>, "%s", [<<"o">>]},
+	 {<<"ORGUNIT">>, "%s", [<<"ou">>]},
+	 {<<"CTRY">>, "%s", [<<"c">>]},
+	 {<<"LOCALITY">>, "%s", [<<"l">>]},
+	 {<<"STREET">>, "%s", [<<"street">>]},
+	 {<<"REGION">>, "%s", [<<"st">>]},
+	 {<<"PCODE">>, "%s", [<<"postalCode">>]},
+	 {<<"TITLE">>, "%s", [<<"title">>]},
+	 {<<"URL">>, "%s", [<<"labeleduri">>]},
+	 {<<"DESC">>, "%s", [<<"description">>]},
+	 {<<"TEL">>, "%s", [<<"telephoneNumber">>]},
+	 {<<"EMAIL">>, "%s", [<<"mail">>]},
+	 {<<"BDAY">>, "%s", [<<"birthDay">>]},
+	 {<<"ROLE">>, "%s", [<<"employeeType">>]},
+	 {<<"PHOTO">>, "%s", [<<"jpegPhoto">>]}
 	]).
 
 -define(SEARCH_FIELDS,
-	[{"User", "%u"},
-	 {"Full Name", "displayName"},
-	 {"Given Name", "givenName"},
-	 {"Middle Name", "initials"},
-	 {"Family Name", "sn"},
-	 {"Nickname", "%u"},
-	 {"Birthday", "birthDay"},
-	 {"Country", "c"},
-	 {"City", "l"},
-	 {"Email", "mail"},
-	 {"Organization Name", "o"},
-	 {"Organization Unit", "ou"}
+	[{<<"User">>, "%u"},
+	 {<<"Full Name">>, "displayName"},
+	 {<<"Given Name">>, "givenName"},
+	 {<<"Middle Name">>, "initials"},
+	 {<<"Family Name">>, "sn"},
+	 {<<"Nickname">>, "%u"},
+	 {<<"Birthday">>, "birthDay"},
+	 {<<"Country">>, "c"},
+	 {<<"City">>, "l"},
+	 {<<"Email">>, "mail"},
+	 {<<"Organization Name">>, "o"},
+	 {<<"Organization Unit">>, "ou"}
 	]).
 
 -define(SEARCH_REPORTED,
@@ -128,6 +128,34 @@
 	 {"Organization Name", "ORGNAME"},
 	 {"Organization Unit", "ORGUNIT"}
 	]).
+
+-define(LFIELD(Label, Var),
+	{xmlelement, "field", [{<<"label">>, translate:translate(Lang, Label)},
+			       {<<"var">>, Var}], []}).
+
+-define(TLFIELD(Type, Label, Var),
+	{xmlelement, <<"field">>, [{<<"type">>, Type},
+			       {<<"label">>, translate:translate(Lang, Label)},
+			       {<<"var">>, Var}], []}).
+
+-define(FORM(JID, SearchFields),
+	[{xmlelement, <<"instructions">>, [],
+	  [{xmlcdata, translate:translate(Lang, <<"You need an x:data capable client to search">>)}]},
+	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {"type", "form"}],
+	  [{xmlelement, "title", [],
+	    [{xmlcdata, <<(translate:translate(Lang, <<"Search users in ">>))/binary,
+	      (jlib:jid_to_binary(JID))/binary>>}]},
+	   {xmlelement, "instructions", [],
+	    [{xmlcdata, translate:translate(Lang, <<"Fill in fields to search "
+					    "for any matching Jabber User">>)}]}
+	  ] ++ lists:map(fun({X,Y}) ->
+                                 ?TLFIELD(<<"text-single">>, X, Y)
+                         end, SearchFields)}]).
+
+-define(FIELD(Var, Val),
+	{xmlelement, "field", [{"var", Var}],
+	 [{xmlelement, "value", [],
+	   [{xmlcdata, Val}]}]}).
 
 %% Unused callbacks.
 handle_cast(_Request, State) ->
@@ -225,20 +253,20 @@ process_local_iq(_From, _To, #iq{type = Type, lang = Lang, sub_el = SubEl} = IQ)
 	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
 	get ->
 	    IQ#iq{type = result,
-		  sub_el = [{xmlelement, "vCard",
+		  sub_el = [{xmlelement, <<"vCard">>,
 			     [{"xmlns", ?NS_VCARD}],
-			     [{xmlelement, "FN", [],
-			       [{xmlcdata, "ejabberd"}]},
-			      {xmlelement, "URL", [],
+			     [{xmlelement, <<"FN">>, [],
+			       [{xmlcdata, <<"ejabberd">>}]},
+			      {xmlelement, <<"URL">>, [],
 			       [{xmlcdata, ?EJABBERD_URI}]},
-			      {xmlelement, "DESC", [],
+			      {xmlelement, <<"DESC">>, [],
 			       [{xmlcdata,
 				 translate:translate(
 				   Lang,
-				   "Erlang Jabber Server") ++
-				   "\nCopyright (c) 2002-2011 ProcessOne"}]},
-			      {xmlelement, "BDAY", [],
-			       [{xmlcdata, "2002-11-16"}]}
+				   <<"Erlang Jabber Server">>) ++
+				   <<"\nCopyright (c) 2002-2011 ProcessOne">>}]},
+			      {xmlelement, <<"BDAY">>, [],
+			       [{xmlcdata, <<"2002-11-16">>}]}
 			     ]}]}
     end.
 
@@ -301,7 +329,6 @@ find_ldap_user(User, State) ->
     end.
 
 ldap_attributes_to_vcard(Attributes, VCardMap, UD) ->
-    ?DEBUG("ldap_attributes_to_vcard(~p, ~p, ~p)",[Attributes, VCardMap, UD]),
     Attrs = lists:map(
 	      fun({VCardName, _, _}) ->
 		      {stringprep:tolower(VCardName),
@@ -311,11 +338,11 @@ ldap_attributes_to_vcard(Attributes, VCardMap, UD) ->
     NElts = [ldap_attribute_to_vcard(vCardN, Attr) || Attr <- Attrs],
     OElts = [ldap_attribute_to_vcard(vCardO, Attr) || Attr <- Attrs],
     AElts = [ldap_attribute_to_vcard(vCardA, Attr) || Attr <- Attrs],
-    [{xmlelement, "vCard", [{"xmlns", ?NS_VCARD}],
+    [{xmlelement, <<"vCard">>, [{<<"xmlns">>, ?NS_VCARD}],
       lists:append([X || X <- Elts, X /= none],
-		   [{xmlelement,"N",[],   [X || X <- NElts, X /= none]},
-		    {xmlelement,"ORG",[], [X || X <- OElts, X /= none]},
-		    {xmlelement,"ADR",[], [X || X <- AElts, X /= none]}])
+		   [{xmlelement,<<"N">>,[],   [X || X <- NElts, X /= none]},
+		    {xmlelement,<<"ORG">>,[], [X || X <- OElts, X /= none]},
+		    {xmlelement,<<"ADR">>,[], [X || X <- AElts, X /= none]}])
      }].
 
 ldap_attribute_to_vcard(vCard, {<<"fn">>, Value}) ->
@@ -386,23 +413,6 @@ ldap_attribute_to_vcard(vCardA, {<<"pcode">>, Value}) ->
 ldap_attribute_to_vcard(_, _) ->
     none.
 
--define(TLFIELD(Type, Label, Var),
-	{xmlelement, <<"field">>, [{<<"type">>, Type},
-			       {<<"label">>, translate:translate(Lang, Label)},
-			       {<<"var">>, Var}], []}).
-
--define(FORM(JID, SearchFields),
-	[{xmlelement, <<"instructions">>, [],
-	  [{xmlcdata, translate:translate(Lang, "You need an x:data capable client to search")}]},
-	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {"type", "form"}],
-	  [{xmlelement, "title", [],
-	    [{xmlcdata, translate:translate(Lang, "Search users in ") ++
-	      jlib:jid_to_string(JID)}]},
-	   {xmlelement, "instructions", [],
-	    [{xmlcdata, translate:translate(Lang, "Fill in fields to search "
-					    "for any matching Jabber User")}]}
-	  ] ++ lists:map(fun({X,Y}) -> ?TLFIELD("text-single", X, Y) end, SearchFields)}]).
-
 do_route(State, From, To, Packet) ->
     spawn(?MODULE, route, [State, From, To, Packet]).
 
@@ -410,7 +420,7 @@ route(State, From, To, Packet) ->
     #jid{user = User, resource = Resource} = To,
     ServerHost = State#state.serverhost,
     if
-	(User /= "") or (Resource /= "") ->
+	(User /= <<>>) or (Resource /= <<>>) ->
 	    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
 	    ejabberd_router:route(To, From, Err);
 	true ->
@@ -440,11 +450,11 @@ route(State, From, To, Packet) ->
 						  type = result,
 						  sub_el =
 						  [{xmlelement,
-						    "query",
-						    [{"xmlns", ?NS_SEARCH}],
-						    [{xmlelement, "x",
-						      [{"xmlns", ?NS_XDATA},
-						       {"type", "result"}],
+						    <<"query">>,
+						    [{<<"xmlns">>, ?NS_SEARCH}],
+						    [{xmlelement, <<"x">>,
+						      [{<<"xmlns">>, ?NS_XDATA},
+						       {<<"type">>, <<"result">>}],
 						      search_result(Lang, To, State, XData)
 						     }]}]},
 					    ejabberd_router:route(
@@ -455,8 +465,8 @@ route(State, From, To, Packet) ->
 			    SearchFields = State#state.search_fields,
 			    ResIQ = IQ#iq{type = result,
 					  sub_el = [{xmlelement,
-						     "query",
-						     [{"xmlns", ?NS_SEARCH}],
+						     <<"query">>,
+						     [{<<"xmlns">>, ?NS_SEARCH}],
 						     ?FORM(To, SearchFields)
 						    }]},
 			    ejabberd_router:route(To,
@@ -476,18 +486,18 @@ route(State, From, To, Packet) ->
 			    ResIQ =
 				IQ#iq{type = result,
 				      sub_el = [{xmlelement,
-						 "query",
-						 [{"xmlns", ?NS_DISCO_INFO}],
-						 [{xmlelement, "identity",
-						   [{"category", "directory"},
-						    {"type", "user"},
-						    {"name",
-						     translate:translate(Lang, "vCard User Search")}],
+						 <<"query">>,
+						 [{<<"xmlns">>, ?NS_DISCO_INFO}],
+						 [{xmlelement, <<"identity">>,
+						   [{<<"category">>, <<"directory">>},
+						    {<<"type">>, <<"user">>},
+						    {<<"name">>,
+						     translate:translate(Lang, <<"vCard User Search">>)}],
 						   []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_SEARCH}], []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_VCARD}], []}
+						  {xmlelement, <<"feature">>,
+						   [{<<"var">>, ?NS_SEARCH}], []},
+						  {xmlelement, <<"feature">>,
+						   [{<<"var">>, ?NS_VCARD}], []}
 						 ] ++ Info
 						}]},
 			    ejabberd_router:route(To,
@@ -504,8 +514,8 @@ route(State, From, To, Packet) ->
 			    ResIQ =
 				IQ#iq{type = result,
 				      sub_el = [{xmlelement,
-						 "query",
-						 [{"xmlns", ?NS_DISCO_ITEMS}],
+						 <<"query">>,
+						 [{<<"xmlns">>, ?NS_DISCO_ITEMS}],
 						 []}]},
 			    ejabberd_router:route(To,
 						  From,
@@ -515,8 +525,8 @@ route(State, From, To, Packet) ->
 		    ResIQ =
 			IQ#iq{type = result,
 			      sub_el = [{xmlelement,
-					 "vCard",
-					 [{"xmlns", ?NS_VCARD}],
+					 <<"vCard">>,
+					 [{<<"xmlns">>, ?NS_VCARD}],
 					 iq_get_vcard(Lang)}]},
 		    ejabberd_router:route(To,
 					  From,
@@ -529,29 +539,25 @@ route(State, From, To, Packet) ->
     end.
 
 iq_get_vcard(Lang) ->
-    [{xmlelement, "FN", [],
-      [{xmlcdata, "ejabberd/mod_vcard"}]},
-     {xmlelement, "URL", [],
+    [{xmlelement, <<"FN">>, [],
+      [{xmlcdata, <<"ejabberd/mod_vcard">>}]},
+     {xmlelement, <<"URL">>, [],
       [{xmlcdata, ?EJABBERD_URI}]},
-     {xmlelement, "DESC", [],
-      [{xmlcdata, translate:translate(
+     {xmlelement, <<"DESC">>, [],
+      [{xmlcdata, <<(translate:translate(
 		    Lang,
-		    "ejabberd vCard module") ++
-		    "\nCopyright (c) 2003-2011 ProcessOne"}]}].
-
--define(LFIELD(Label, Var),
-	{xmlelement, "field", [{"label", translate:translate(Lang, Label)},
-			       {"var", Var}], []}).
+		    <<"ejabberd vCard module">>))/binary,
+		    <<"\nCopyright (c) 2003-2011 ProcessOne">>/binary>>}]}].
 
 search_result(Lang, JID, State, Data) ->
     SearchReported = State#state.search_reported,
-    Header = [{xmlelement, "title", [],
-	       [{xmlcdata, translate:translate(Lang, "Search Results for ") ++
-		 jlib:jid_to_string(JID)}]},
-	      {xmlelement, "reported", [],
-	       [?TLFIELD("text-single", "Jabber ID", "jid")] ++
+    Header = [{xmlelement, <<"title">>, [],
+	       [{xmlcdata, <<(translate:translate(Lang, <<"Search Results for ">>))/binary,
+		 (jlib:jid_to_binary(JID))/binary>>}]},
+	      {xmlelement, <<"reported">>, [],
+	       [?TLFIELD(<<"text-single">>, <<"Jabber ID">>, <<"jid">>)] ++
 	       lists:map(
-		 fun({Name, Value}) -> ?TLFIELD("text-single", Name, Value) end,
+		 fun({Name, Value}) -> ?TLFIELD(<<"text-single">>, Name, Value) end,
 		 SearchReported)
 	      }],
     case search(State, Data) of
@@ -560,11 +566,6 @@ search_result(Lang, JID, State, Data) ->
 	Result ->
 	    Header ++ Result
     end.
-
--define(FIELD(Var, Val),
-	{xmlelement, "field", [{"var", Var}],
-	 [{xmlelement, "value", [],
-	   [{xmlcdata, Val}]}]}).
 
 search(State, Data) ->
     Base = State#state.base,
@@ -611,9 +612,11 @@ search_items(Entries, State) ->
 						     VCardMap,
 						     {Username, ?MYNAME})}
 					  end, SearchReported),
-			        Result = [?FIELD("jid", Username ++ "@" ++ LServer)] ++
+			        Result = [?FIELD(<<"jid">>,
+                                                 list_to_binary(
+                                                   Username ++ "@" ++ LServer))] ++
 				    [?FIELD(Name, Value) || {Name, Value} <- RFields],
-			        [{xmlelement, "item", [], Result}];
+			        [{xmlelement, <<"item">>, [], Result}];
 			      _ ->
 			          []
 		          end;
@@ -656,7 +659,7 @@ find_xdata_el({xmlelement, _Name, _Attrs, SubEls}) ->
 find_xdata_el1([]) ->
     false;
 find_xdata_el1([{xmlelement, Name, Attrs, SubEls} | Els]) ->
-    case xml:get_attr_s("xmlns", Attrs) of
+    case xml:get_attr_s(<<"xmlns">>, Attrs) of
 	?NS_XDATA ->
 	    {xmlelement, Name, Attrs, SubEls};
 	_ ->
