@@ -101,36 +101,36 @@
 	]).
 
 -define(SEARCH_FIELDS,
-	[{<<"User">>, "%u"},
-	 {<<"Full Name">>, "displayName"},
-	 {<<"Given Name">>, "givenName"},
-	 {<<"Middle Name">>, "initials"},
-	 {<<"Family Name">>, "sn"},
-	 {<<"Nickname">>, "%u"},
-	 {<<"Birthday">>, "birthDay"},
-	 {<<"Country">>, "c"},
-	 {<<"City">>, "l"},
-	 {<<"Email">>, "mail"},
-	 {<<"Organization Name">>, "o"},
-	 {<<"Organization Unit">>, "ou"}
+	[{<<"User">>, <<"%u">>},
+	 {<<"Full Name">>, <<"displayName">>},
+	 {<<"Given Name">>, <<"givenName">>},
+	 {<<"Middle Name">>, <<"initials">>},
+	 {<<"Family Name">>, <<"sn">>},
+	 {<<"Nickname">>, <<"%u">>},
+	 {<<"Birthday">>, <<"birthDay">>},
+	 {<<"Country">>, <<"c">>},
+	 {<<"City">>, <<"l">>},
+	 {<<"Email">>, <<"mail">>},
+	 {<<"Organization Name">>, <<"o">>},
+	 {<<"Organization Unit">>, <<"ou">>}
 	]).
 
 -define(SEARCH_REPORTED,
-	[{"Full Name", "FN"},
-	 {"Given Name", "FIRST"},
-	 {"Middle Name", "MIDDLE"},
-	 {"Family Name", "LAST"},
-	 {"Nickname", "NICK"},
-	 {"Birthday", "BDAY"},
-	 {"Country", "CTRY"},
-	 {"City", "LOCALITY"},
-	 {"Email", "EMAIL"},
-	 {"Organization Name", "ORGNAME"},
-	 {"Organization Unit", "ORGUNIT"}
+	[{<<"Full Name">>, <<"FN">>},
+	 {<<"Given Name">>, <<"FIRST">>},
+	 {<<"Middle Name">>, <<"MIDDLE">>},
+	 {<<"Family Name">>, <<"LAST">>},
+	 {<<"Nickname">>, <<"NICK">>},
+	 {<<"Birthday">>, <<"BDAY">>},
+	 {<<"Country">>, <<"CTRY">>},
+	 {<<"City">>, <<"LOCALITY">>},
+	 {<<"Email">>, <<"EMAIL">>},
+	 {<<"Organization Name">>, <<"ORGNAME">>},
+	 {<<"Organization Unit">>, <<"ORGUNIT">>}
 	]).
 
 -define(LFIELD(Label, Var),
-	{xmlelement, "field", [{<<"label">>, translate:translate(Lang, Label)},
+	{xmlelement, <<"field">>, [{<<"label">>, translate:translate(Lang, Label)},
 			       {<<"var">>, Var}], []}).
 
 -define(TLFIELD(Type, Label, Var),
@@ -141,11 +141,11 @@
 -define(FORM(JID, SearchFields),
 	[{xmlelement, <<"instructions">>, [],
 	  [{xmlcdata, translate:translate(Lang, <<"You need an x:data capable client to search">>)}]},
-	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {"type", "form"}],
-	  [{xmlelement, "title", [],
+	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {<<"type">>, <<"form">>}],
+	  [{xmlelement, <<"title">>, [],
 	    [{xmlcdata, <<(translate:translate(Lang, <<"Search users in ">>))/binary,
 	      (jlib:jid_to_binary(JID))/binary>>}]},
-	   {xmlelement, "instructions", [],
+	   {xmlelement, <<"instructions">>, [],
 	    [{xmlcdata, translate:translate(Lang, <<"Fill in fields to search "
 					    "for any matching Jabber User">>)}]}
 	  ] ++ lists:map(fun({X,Y}) ->
@@ -153,8 +153,8 @@
                          end, SearchFields)}]).
 
 -define(FIELD(Var, Val),
-	{xmlelement, "field", [{"var", Var}],
-	 [{xmlelement, "value", [],
+	{xmlelement, <<"field">>, [{<<"var">>, Var}],
+	 [{xmlelement, <<"value">>, [],
 	   [{xmlcdata, Val}]}]}).
 
 %% Unused callbacks.
@@ -418,125 +418,124 @@ do_route(State, From, To, Packet) ->
 
 route(State, From, To, Packet) ->
     #jid{user = User, resource = Resource} = To,
-    ServerHost = State#state.serverhost,
     if
 	(User /= <<>>) or (Resource /= <<>>) ->
 	    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
 	    ejabberd_router:route(To, From, Err);
 	true ->
 	    IQ = jlib:iq_query_info(Packet),
-	    case IQ of
-		#iq{type = Type, xmlns = ?NS_SEARCH, lang = Lang, sub_el = SubEl} ->
-		    case Type of
-			set ->
-			    XDataEl = find_xdata_el(SubEl),
-			    case XDataEl of
-				false ->
-				    Err = jlib:make_error_reply(
-					    Packet, ?ERR_BAD_REQUEST),
-				    ejabberd_router:route(To, From, Err);
-				_ ->
-				    XData = jlib:parse_xdata_submit(XDataEl),
-				    case XData of
-					invalid ->
-					    Err = jlib:make_error_reply(
-						    Packet,
-						    ?ERR_BAD_REQUEST),
-					    ejabberd_router:route(To, From,
-								  Err);
-					_ ->
-					    ResIQ =
-						IQ#iq{
-						  type = result,
-						  sub_el =
-						  [{xmlelement,
-						    <<"query">>,
-						    [{<<"xmlns">>, ?NS_SEARCH}],
-						    [{xmlelement, <<"x">>,
-						      [{<<"xmlns">>, ?NS_XDATA},
-						       {<<"type">>, <<"result">>}],
-						      search_result(Lang, To, State, XData)
-						     }]}]},
-					    ejabberd_router:route(
-					      To, From, jlib:iq_to_xml(ResIQ))
-				    end
-			    end;
-			get ->
-			    SearchFields = State#state.search_fields,
-			    ResIQ = IQ#iq{type = result,
-					  sub_el = [{xmlelement,
-						     <<"query">>,
-						     [{<<"xmlns">>, ?NS_SEARCH}],
-						     ?FORM(To, SearchFields)
-						    }]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = Type, xmlns = ?NS_DISCO_INFO, lang = Lang} ->
-		    case Type of
-			set ->
-			    Err = jlib:make_error_reply(
-				    Packet, ?ERR_NOT_ALLOWED),
-			    ejabberd_router:route(To, From, Err);
-			get ->
-			    Info = ejabberd_hooks:run_fold(
-				     disco_info, ServerHost, [],
-				     [ServerHost, ?MODULE, "", ""]),
-			    ResIQ =
-				IQ#iq{type = result,
-				      sub_el = [{xmlelement,
-						 <<"query">>,
-						 [{<<"xmlns">>, ?NS_DISCO_INFO}],
-						 [{xmlelement, <<"identity">>,
-						   [{<<"category">>, <<"directory">>},
-						    {<<"type">>, <<"user">>},
-						    {<<"name">>,
-						     translate:translate(Lang, <<"vCard User Search">>)}],
-						   []},
-						  {xmlelement, <<"feature">>,
-						   [{<<"var">>, ?NS_SEARCH}], []},
-						  {xmlelement, <<"feature">>,
-						   [{<<"var">>, ?NS_VCARD}], []}
-						 ] ++ Info
-						}]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = Type, xmlns = ?NS_DISCO_ITEMS} ->
-		    case Type of
-			set ->
-			    Err = jlib:make_error_reply(
-				    Packet, ?ERR_NOT_ALLOWED),
-			    ejabberd_router:route(To, From, Err);
-			get ->
-			    ResIQ =
-				IQ#iq{type = result,
-				      sub_el = [{xmlelement,
-						 <<"query">>,
-						 [{<<"xmlns">>, ?NS_DISCO_ITEMS}],
-						 []}]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = get, xmlns = ?NS_VCARD, lang = Lang} ->
-		    ResIQ =
-			IQ#iq{type = result,
-			      sub_el = [{xmlelement,
-					 <<"vCard">>,
-					 [{<<"xmlns">>, ?NS_VCARD}],
-					 iq_get_vcard(Lang)}]},
-		    ejabberd_router:route(To,
-					  From,
-					  jlib:iq_to_xml(ResIQ));
-		_ ->
-		    Err = jlib:make_error_reply(Packet,
-						?ERR_SERVICE_UNAVAILABLE),
-		    ejabberd_router:route(To, From, Err)
-	    end
+            handle_iq(State, From, To, Packet, IQ)
     end.
+
+handle_iq(State, From, To, Packet, IQ = #iq{type = set,
+                                            xmlns = ?NS_SEARCH,
+                                            lang = Lang,
+                                            sub_el = SubEl}) ->
+    XDataEl = find_xdata_el(SubEl),
+    case XDataEl of
+        false ->
+            Err = jlib:make_error_reply(Packet, ?ERR_BAD_REQUEST),
+            ejabberd_router:route(To, From, Err);
+        _ ->
+            XData = jlib:parse_xdata_submit(XDataEl),
+            case XData of
+                invalid ->
+                    Err = jlib:make_error_reply(Packet, ?ERR_BAD_REQUEST),
+                    ejabberd_router:route(To, From, Err);
+                _ ->
+                    %% TODO: Should possibly check that the search fields are
+                    %% among those expected and allowed.
+                    ResIQ =
+                        IQ#iq{
+                          type = result,
+                          sub_el =
+                              [{xmlelement,
+                                <<"query">>,
+                                [{<<"xmlns">>, ?NS_SEARCH}],
+                                [{xmlelement, <<"x">>,
+                                  [{<<"xmlns">>, ?NS_XDATA},
+                                   {<<"type">>, <<"result">>}],
+                                  search_result(Lang, To, State, xdbin2list(XData))
+                                 }]}]},
+                    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ))
+            end
+    end;
+
+handle_iq(State, From, To, _Packet, IQ = #iq{type = get,
+                                             xmlns = ?NS_SEARCH,
+                                             lang = Lang}) ->
+    SearchFields = State#state.search_fields,
+    ResIQ = IQ#iq{type = result,
+                  sub_el = [{xmlelement,
+                             <<"query">>,
+                             [{<<"xmlns">>, ?NS_SEARCH}],
+                             ?FORM(To, SearchFields)
+                            }]},
+    ejabberd_router:route(To, From,jlib:iq_to_xml(ResIQ));
+
+handle_iq(_State, From, To, Packet, #iq{type = set,
+                                        xmlns = ?NS_DISCO_INFO}) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
+    ejabberd_router:route(To, From, Err);
+
+handle_iq(State, From, To, _Packet, IQ = #iq{type = get,
+                                             xmlns = ?NS_DISCO_INFO,
+                                             lang = Lang}) ->
+    ServerHost = State#state.serverhost,
+    Info = ejabberd_hooks:run_fold(
+             disco_info, ServerHost, [], [ServerHost, ?MODULE, "", ""]),
+    ResIQ =
+        IQ#iq{type = result,
+              sub_el = [{xmlelement,
+                         <<"query">>,
+                         [{<<"xmlns">>, ?NS_DISCO_INFO}],
+                         [{xmlelement, <<"identity">>,
+                           [{<<"category">>, <<"directory">>},
+                            {<<"type">>, <<"user">>},
+                            {<<"name">>,
+                             translate:translate(Lang, <<"vCard User Search">>)}],
+                           []},
+                          {xmlelement, <<"feature">>,
+                           [{<<"var">>, ?NS_SEARCH}], []},
+                          {xmlelement, <<"feature">>,
+                           [{<<"var">>, ?NS_VCARD}], []}
+                         ] ++ Info
+                        }]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+handle_iq(_State, From, To, Packet, #iq{type = set,
+                                        xmlns = ?NS_DISCO_ITEMS}) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
+    ejabberd_router:route(To, From, Err);
+
+handle_iq(_State, From, To, _Packet, IQ = #iq{type = get,
+                                              xmlns = ?NS_DISCO_ITEMS}) ->
+    ResIQ = IQ#iq{type = result,
+                  sub_el = [{xmlelement,
+                             <<"query">>,
+                             [{<<"xmlns">>, ?NS_DISCO_ITEMS}],
+                             []}]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+handle_iq(_State, From, To, _Packet, IQ = #iq{type = get,
+                                              xmlns = ?NS_VCARD,
+                                              lang = Lang}) ->
+    ResIQ = IQ#iq{type = result,
+                  sub_el = [{xmlelement,
+                             <<"vCard">>,
+                             [{<<"xmlns">>, ?NS_VCARD}],
+                             iq_get_vcard(Lang)}]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+handle_iq(_State, From, To, Packet, _) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
+    ejabberd_router:route(To, From, Err).
+
+%% TODO: temporary hack for eldap which expects strings.
+xdbin2list([]) ->
+    [];
+xdbin2list([{Atom,[Bin]}|Rest]) ->
+    [{Atom,[binary_to_list(Bin)]}|xdbin2list(Rest)].
 
 iq_get_vcard(Lang) ->
     [{xmlelement, <<"FN">>, [],
