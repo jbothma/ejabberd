@@ -28,6 +28,8 @@
 
 -export([parse/1, parse/2, do_sub/2]).
 
+-define(MAX_RECURSION, 100).
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -47,6 +49,10 @@
 %%%   {ok,{'and',[{'not',{lessOrEqual,{'AttributeValueAssertion',"uid","100"}}},
 %%%           {present,"mail"}]}}
 %%%-------------------------------------------------------------------
+parse(L) when is_binary(L) ->
+    %% TODO: fix this temporary hack
+    parse(binary_to_list(L), []);
+
 parse(L) when is_list(L) ->
     parse(L, []).
 
@@ -126,8 +132,6 @@ check([], _) ->
 check(Buf, S) ->
     [{str, 1, do_sub(lists:reverse(Buf), S)}].
 
--define(MAX_RECURSION, 100).
-
 do_sub(S, []) ->
     S;
 
@@ -135,17 +139,17 @@ do_sub([], _) ->
     [];
 
 do_sub(S, [{RegExp, New} | T]) ->
-    Result = do_sub(S, {RegExp, replace_amps(New)}, 1),
+    Result = do_sub(S, {RegExp, replace_specials(New)}, 1),
     do_sub(Result, T);
 
 do_sub(S, [{RegExp, New, Times} | T]) ->
-    Result = do_sub(S, {RegExp, replace_amps(New), Times}, 1),
+    Result = do_sub(S, {RegExp, replace_specials(New), Times}, 1),
     do_sub(Result, T).
 
 do_sub(S, {RegExp, New}, Iter) ->
     case re:run(S, RegExp, [{capture, none}]) of
         match ->
-            case re:replace(S, RegExp, New, [{return, list}]) of
+            case re:replace(S, RegExp, New, [{return, binary}]) of
                 NewS when Iter =< ?MAX_RECURSION ->
                     do_sub(NewS, {RegExp, New}, Iter+1);
                 _NewS when Iter > ?MAX_RECURSION ->
@@ -161,7 +165,7 @@ do_sub(S, {_, _, N}, _) when N<1 ->
 do_sub(S, {RegExp, New, Times}, Iter) ->
     case re:run(S, RegExp, [{capture, none}]) of
         match ->
-            case re:replace(S, RegExp, New, [{return, list}]) of
+            case re:replace(S, RegExp, New, [{return, binary}]) of
                 NewS when Iter < Times ->
                     do_sub(NewS, {RegExp, New, Times}, Iter+1);
                 NewS ->
@@ -171,5 +175,6 @@ do_sub(S, {RegExp, New, Times}, Iter) ->
             S
     end.
 
-replace_amps(Subject) ->
-    re:replace(Subject, "&", "\\\\&",[{return,binary}]).
+replace_specials(Subject) ->
+    Subject1 = re:replace(Subject, "\\&", "\\\\&", [{return,binary}]),
+    re:replace(Subject1, "\\\\", "\\\\", [{return,binary}]).

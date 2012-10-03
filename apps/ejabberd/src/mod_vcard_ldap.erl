@@ -325,7 +325,8 @@ process_vcard_ldap(To, IQ, Server) ->
 		    VCardMap = State#state.vcard_map,
 		    case find_ldap_user(LUser, State) of
 			#eldap_entry{attributes = Attributes} ->
-			    Vcard = ldap_attributes_to_vcard(Attributes, VCardMap, {LUser, LServer}),
+			    Vcard = ldap_attributes_to_vcard(
+                                      Attributes, VCardMap, {LUser, LServer}),
 			    IQ#iq{type = result, sub_el = Vcard};
 			_ ->
 			    IQ#iq{ type = error,
@@ -357,10 +358,11 @@ find_ldap_user(User, State) ->
     end.
 
 ldap_attributes_to_vcard(Attributes, VCardMap, UD) ->
+    %% Substitute LDAP attr values according to VCardMap
     Attrs = lists:map(
-	      fun({VCardName, _, _}) ->
-		      {stringprep:tolower(VCardName),
-		       map_vcard_attr(VCardName, Attributes, VCardMap, UD)}
+	      fun({VCardField, _, _}) ->
+		      {stringprep:tolower(VCardField),
+		       map_vcard_attr(VCardField, Attributes, VCardMap, UD)}
 	      end, VCardMap),
     Elts = [ldap_attribute_to_vcard(vCard, Attr) || Attr <- Attrs],
     NElts = [ldap_attribute_to_vcard(vCardN, Attr) || Attr <- Attrs],
@@ -407,7 +409,7 @@ ldap_attribute_to_vcard(vCard, {<<"email">>, Value}) ->
 
 ldap_attribute_to_vcard(vCard, {<<"photo">>, Value}) ->
     {xmlelement,<<"PHOTO">>,[],[
-                                {xmlelement,<<"BINVAL">>,[],[{xmlcdata, base64:encode(Value)}]}]};
+                                {xmlelement,<<"BINVAL">>,[],[{xmlcdata, Value}]}]};
 
 ldap_attribute_to_vcard(vCardN, {<<"family">>, Value}) ->
     {xmlelement,<<"FAMILY">>,[],[{xmlcdata,Value}]};
@@ -507,10 +509,9 @@ handle_dir_iq(_State, From, To, Packet, #iq{type = set,
     Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
     ejabberd_router:route(To, From, Err);
 
-handle_dir_iq(State, From, To, Packet, IQ = #iq{type = get,
+handle_dir_iq(State, From, To, _Packet, IQ = #iq{type = get,
                                                 xmlns = ?NS_DISCO_INFO,
                                                 lang = Lang}) ->
-    io:format("~p~n~n~p~n",[Packet, IQ]),
     ServerHost = State#state.serverhost,
     Info = ejabberd_hooks:run_fold(
              disco_info, ServerHost, [], [ServerHost, ?MODULE, "", ""]),
@@ -664,23 +665,33 @@ xdbin2list([{Atom,[Bin]}|Rest]) ->
     [{Atom,[binary_to_list(Bin)]}|xdbin2list(Rest)].
 
 
-map_vcard_attr(VCardName, Attributes, Pattern, UD) ->
+%% UD is {user, domain}
+map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
+    %% find the VCardMap definition for the current vCard field
     Res = lists:filter(
 	    fun({Name, _, _}) ->
-		    eldap_utils:case_insensitive_match(Name, VCardName)
-	    end, Pattern),
+		    eldap_utils:case_insensitive_match(Name, VCardField)
+	    end, VCardMap),
     case Res of
-	[{_, Str, Attrs}] ->
-	    process_pattern(Str, UD,
-			    [eldap_utils:get_ldap_attr(X, Attributes) || X<-Attrs]);
-	_ -> ""
+        %% Hack to treat PHOTO binary data specially.
+        %% Effectively hardcode vCard PHOTO replacement pattern as
+        %% {"PHOTO", "%s", [PhotoAttr | IgnoredAttrs ]} because actually
+        %% replacing a photo is too expensive via eldap_filter -> re
+        %% Too expensive here means a 40k jpeg took 3.7 seconds to replace.
+	[{"PHOTO", _, [LDAPAttrName|_]}] ->
+            JpegBinByteList = eldap_utils:get_ldap_attr(LDAPAttrName, Attributes),
+            base64:encode(JpegBinByteList);
+	[{_, VCardFieldTemplate, LDAPAttrNames}] ->
+            LDAPAttrVals = [eldap_utils:get_ldap_attr(LDAPAttrName, Attributes)
+                            || LDAPAttrName <- LDAPAttrNames],
+	    process_pattern(VCardFieldTemplate, UD, LDAPAttrVals);
+	_ -> <<"">>
     end.
 
-process_pattern(Str, {User, Domain}, AttrValues) ->
-    eldap_filter:do_sub(
-      Str,
-      [{"%u", User},{"%d", Domain}] ++
-      [{"%s", V, 1} || V <- AttrValues]).
+process_pattern(VCardFieldTemplate, {User, Domain}, AttrValues) ->
+    StringSubTups = [{"%s", Value, 1} || Value <- AttrValues],
+    SubTuples = [{"%u", User}, {"%d", Domain}] ++ StringSubTups,
+    eldap_filter:do_sub(VCardFieldTemplate, SubTuples).
 
 find_xdata_el({xmlelement, _Name, _Attrs, SubEls}) ->
     find_xdata_el1(SubEls).
