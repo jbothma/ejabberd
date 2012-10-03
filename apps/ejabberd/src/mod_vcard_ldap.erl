@@ -46,7 +46,7 @@
 
 %% event hooks and iq handlers
 -export([
-	 get_sm_features/5,
+	 get_local_features/5,
 	 process_local_iq/3,
 	 process_sm_iq/3
         ]).
@@ -199,7 +199,8 @@ init([Host, Opts]) ->
 				  ?MODULE, process_local_iq, IQDisc),
     gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_VCARD,
 				  ?MODULE, process_sm_iq, IQDisc),
-    ejabberd_hooks:add(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
+    ejabberd_hooks:add(
+      disco_local_features, Host, ?MODULE, get_local_features, 50),
     eldap_pool:start_link(State#state.eldap_id,
 		     State#state.servers,
 		     State#state.backups,
@@ -220,7 +221,8 @@ terminate(_Reason, State) ->
     Host = State#state.serverhost,
     gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
     gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
-    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
+    ejabberd_hooks:delete(
+      disco_local_features, Host, ?MODULE, get_local_features, 50),
     case State#state.search of
 	true ->
 	    ejabberd_router:unregister_route(State#state.directory_jid);
@@ -259,15 +261,13 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 %%=======================================
-%% disco_sm_features event handler
+%% disco_local_features event handler
 %%=======================================
-get_sm_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
+get_local_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
     Acc;
-get_sm_features(Acc, From, To, Node, Lang) ->
-io:format("get_sm_features(~p, ~p, ~p, ~p, ~p)~n",
-          [Acc, From, To, Node, Lang]),
+get_local_features(Acc, From, To, Node, Lang) ->
     case Node of
-	[] ->
+	<<>> ->
 	    case Acc of
 		{result, Features} ->
 		    {result, [?NS_VCARD | Features]};
