@@ -31,7 +31,8 @@
 -behaviour(gen_mod).
 
 %% gen_server callbacks.
--export([init/1,
+-export([start_link/2,
+	 init/1,
 	 handle_info/2,
 	 handle_call/3,
 	 handle_cast/2,
@@ -39,15 +40,21 @@
 	 code_change/3
 	]).
 
+%% gen_mod
 -export([start/2,
-	 start_link/2,
-	 stop/1,
+	 stop/1]).
+
+%% event hooks and iq handlers
+-export([
 	 get_sm_features/5,
 	 process_local_iq/3,
-	 process_sm_iq/3,
-	 remove_user/1,
-	 route/4
-	]).
+	 process_sm_iq/3
+        ]).
+
+%% for spawn. TODO: not sure why this gets spawned
+-export([
+         spawned_dir_iq/4
+        ]).
 
 -include("ejabberd.hrl").
 -include_lib("eldap/include/eldap.hrl").
@@ -56,7 +63,7 @@
 -define(PROCNAME, ejabberd_mod_vcard_ldap).
 
 -record(state, {serverhost,
-		myhost,
+		directory_jid,
 		eldap_id,
 		search,
 		servers,
@@ -157,13 +164,10 @@
 	 [{xmlelement, <<"value">>, [],
 	   [{xmlcdata, Val}]}]}).
 
-%% Unused callbacks.
-handle_cast(_Request, State) ->
-    {noreply, State}.
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-%% -----
 
+%%=======================================
+%% gen_mod
+%%=======================================
 
 start(Host, Opts) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
@@ -179,17 +183,10 @@ stop(Host) ->
     supervisor:terminate_child(ejabberd_sup, Proc),
     supervisor:delete_child(ejabberd_sup, Proc).
 
-terminate(_Reason, State) ->
-    Host = State#state.serverhost,
-    gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
-    gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
-    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
-    case State#state.search of
-	true ->
-	    ejabberd_router:unregister_route(State#state.myhost);
-	_ ->
-	    ok
-    end.
+
+%%=======================================
+%% gen_server
+%%=======================================
 
 start_link(Host, Opts) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
@@ -212,15 +209,30 @@ init([Host, Opts]) ->
 		     State#state.tls_options),
     case State#state.search of
 	true ->
-	    ejabberd_router:register_route(State#state.myhost);
+	    ejabberd_router:register_route(State#state.directory_jid);
 	_ ->
 	    ok
     end,
     ?DEBUG("~p initial state: ~p", [?MODULE, State]),
     {ok, State}.
 
+terminate(_Reason, State) ->
+    Host = State#state.serverhost,
+    gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
+    gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
+    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
+    case State#state.search of
+	true ->
+	    ejabberd_router:unregister_route(State#state.directory_jid);
+	_ ->
+	    ok
+    end.
+
+%%---------------------------------------
+%% ejd_router handler - directory service
+%%---------------------------------------
 handle_info({route, From, To, Packet}, State) ->
-    case do_route(State, From, To, Packet) of
+    case directory_iq(State, From, To, Packet) of
 	Pid when is_pid(Pid) ->
 	    ok;
 	_ ->
@@ -232,9 +244,28 @@ handle_info({route, From, To, Packet}, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
+handle_call(get_state, _From, State) ->
+    {reply, {ok, State}, State};
+handle_call(stop, _From, State) ->
+    {stop, normal, ok, State};
+handle_call(_Request, _From, State) ->
+    {reply, bad_request, State}.
+
+handle_cast(_Request, State) ->
+    {noreply, State}.
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+
+
+%%=======================================
+%% disco_sm_features event handler
+%%=======================================
 get_sm_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
     Acc;
-get_sm_features(Acc, _From, _To, Node, _Lang) ->
+get_sm_features(Acc, From, To, Node, Lang) ->
+io:format("get_sm_features(~p, ~p, ~p, ~p, ~p)~n",
+          [Acc, From, To, Node, Lang]),
     case Node of
 	[] ->
 	    case Acc of
@@ -247,29 +278,34 @@ get_sm_features(Acc, _From, _To, Node, _Lang) ->
 	    Acc
     end.
 
-process_local_iq(_From, _To, #iq{type = Type, lang = Lang, sub_el = SubEl} = IQ) ->
-    case Type of
-	set ->
-	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
-	get ->
-	    IQ#iq{type = result,
-		  sub_el = [{xmlelement, <<"vCard">>,
-			     [{"xmlns", ?NS_VCARD}],
-			     [{xmlelement, <<"FN">>, [],
-			       [{xmlcdata, <<"ejabberd">>}]},
-			      {xmlelement, <<"URL">>, [],
-			       [{xmlcdata, ?EJABBERD_URI}]},
-			      {xmlelement, <<"DESC">>, [],
-			       [{xmlcdata,
-				 translate:translate(
-				   Lang,
-				   <<"Erlang Jabber Server">>) ++
-				   <<"\nCopyright (c) 2002-2011 ProcessOne">>}]},
-			      {xmlelement, <<"BDAY">>, [],
-			       [{xmlcdata, <<"2002-11-16">>}]}
-			     ]}]}
-    end.
+%%=======================================
+%% ejd_local NS_VCARD iq_handler
+%%=======================================
+process_local_iq(_From, _To, #iq{ type = set,
+                                  sub_el = SubEl} = IQ) ->
+    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
+process_local_iq(_From, _To, #iq{ type = get,
+                                  lang = Lang} = IQ) ->
+    IQ#iq{type = result,
+          sub_el = [{xmlelement, <<"vCard">>,
+                     [{"xmlns", ?NS_VCARD}],
+                     [{xmlelement, <<"FN">>, [],
+                       [{xmlcdata, <<"ejabberd">>}]},
+                      {xmlelement, <<"URL">>, [],
+                       [{xmlcdata, ?EJABBERD_URI}]},
+                      {xmlelement, <<"DESC">>, [],
+                       [{xmlcdata,
+                         <<(translate:translate(
+                              Lang,
+                              <<"Erlang Jabber Server">>))/binary,
+                           <<"\nCopyright (c) 2002-2011 ProcessOne">>/binary>>}]},
+                      {xmlelement, <<"BDAY">>, [],
+                       [{xmlcdata, <<"2002-11-16">>}]}
+                     ]}]}.
 
+%%=======================================
+%% ejd_sm NS_VCARD iq_handler
+%%=======================================
 process_sm_iq(_From, #jid{lserver=LServer} = To, #iq{sub_el = SubEl} = IQ) ->
     case process_vcard_ldap(To, IQ, LServer) of
 	{'EXIT', _} ->
@@ -277,6 +313,11 @@ process_sm_iq(_From, #jid{lserver=LServer} = To, #iq{sub_el = SubEl} = IQ) ->
 	Other ->
 	    Other
     end.
+
+
+%%=======================================
+%% internal
+%%=======================================
 
 process_vcard_ldap(To, IQ, Server) ->
     {ok, State} = eldap_utils:get_state(Server, ?PROCNAME),
@@ -295,19 +336,14 @@ process_vcard_ldap(To, IQ, Server) ->
 			    Vcard = ldap_attributes_to_vcard(Attributes, VCardMap, {LUser, LServer}),
 			    IQ#iq{type = result, sub_el = Vcard};
 			_ ->
-			    IQ#iq{type = result, sub_el = []}
+			    IQ#iq{ type = error,
+                                   sub_el = [?ERR_SERVICE_UNAVAILABLE] }
 		    end;
 		_ ->
-		    IQ#iq{type = result, sub_el = []}
+		    IQ#iq{ type = error,
+                           sub_el = [?ERR_SERVICE_UNAVAILABLE] }
 	    end
 	end.
-
-handle_call(get_state, _From, State) ->
-    {reply, {ok, State}, State};
-handle_call(stop, _From, State) ->
-    {stop, normal, ok, State};
-handle_call(_Request, _From, State) ->
-    {reply, bad_request, State}.
 
 find_ldap_user(User, State) ->
     Base = State#state.base,
@@ -366,6 +402,9 @@ ldap_attribute_to_vcard(vCard, {<<"desc">>, Value}) ->
 ldap_attribute_to_vcard(vCard, {<<"role">>, Value}) ->
     {xmlelement,<<"ROLE">>,[],[{xmlcdata,Value}]};
 
+ldap_attribute_to_vcard(vCard, {<<"jabberid">>, Value}) ->
+    {xmlelement,<<"JABBERID">>,[], [{xmlcdata,Value}]};
+
 ldap_attribute_to_vcard(vCard, {<<"tel">>, Value}) ->
     {xmlelement,<<"TEL">>,[], [{xmlelement,<<"NUMBER">>,[],[{xmlcdata,Value}]}]};
 
@@ -376,7 +415,7 @@ ldap_attribute_to_vcard(vCard, {<<"email">>, Value}) ->
 
 ldap_attribute_to_vcard(vCard, {<<"photo">>, Value}) ->
     {xmlelement,<<"PHOTO">>,[],[
-			    {xmlelement,"BINVAL",[],[{xmlcdata, jlib:encode_base64(Value)}]}]};
+                                {xmlelement,<<"BINVAL">>,[],[{xmlcdata, base64:encode(Value)}]}]};
 
 ldap_attribute_to_vcard(vCardN, {<<"family">>, Value}) ->
     {xmlelement,<<"FAMILY">>,[],[{xmlcdata,Value}]};
@@ -411,10 +450,10 @@ ldap_attribute_to_vcard(vCardA, {<<"pcode">>, Value}) ->
 ldap_attribute_to_vcard(_, _) ->
     none.
 
-do_route(State, From, To, Packet) ->
-    spawn(?MODULE, route, [State, From, To, Packet]).
+directory_iq(State, From, To, Packet) ->
+    spawn(?MODULE, spawned_dir_iq, [State, From, To, Packet]).
 
-route(State, From, To, Packet) ->
+spawned_dir_iq(State, From, To, Packet) ->
     #jid{user = User, resource = Resource} = To,
     if
 	(User /= <<>>) or (Resource /= <<>>) ->
@@ -422,13 +461,13 @@ route(State, From, To, Packet) ->
 	    ejabberd_router:route(To, From, Err);
 	true ->
 	    IQ = jlib:iq_query_info(Packet),
-            handle_iq(State, From, To, Packet, IQ)
+            handle_dir_iq(State, From, To, Packet, IQ)
     end.
 
-handle_iq(State, From, To, Packet, IQ = #iq{type = set,
-                                            xmlns = ?NS_SEARCH,
-                                            lang = Lang,
-                                            sub_el = SubEl}) ->
+handle_dir_iq(State, From, To, Packet, IQ = #iq{type = set,
+                                                xmlns = ?NS_SEARCH,
+                                                lang = Lang,
+                                                sub_el = SubEl}) ->
     XDataEl = find_xdata_el(SubEl),
     case XDataEl of
         false ->
@@ -459,9 +498,9 @@ handle_iq(State, From, To, Packet, IQ = #iq{type = set,
             end
     end;
 
-handle_iq(State, From, To, _Packet, IQ = #iq{type = get,
-                                             xmlns = ?NS_SEARCH,
-                                             lang = Lang}) ->
+handle_dir_iq(State, From, To, _Packet, IQ = #iq{type = get,
+                                                 xmlns = ?NS_SEARCH,
+                                                 lang = Lang}) ->
     SearchFields = State#state.search_fields,
     ResIQ = IQ#iq{type = result,
                   sub_el = [{xmlelement,
@@ -471,14 +510,15 @@ handle_iq(State, From, To, _Packet, IQ = #iq{type = get,
                             }]},
     ejabberd_router:route(To, From,jlib:iq_to_xml(ResIQ));
 
-handle_iq(_State, From, To, Packet, #iq{type = set,
-                                        xmlns = ?NS_DISCO_INFO}) ->
+handle_dir_iq(_State, From, To, Packet, #iq{type = set,
+                                            xmlns = ?NS_DISCO_INFO}) ->
     Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
     ejabberd_router:route(To, From, Err);
 
-handle_iq(State, From, To, _Packet, IQ = #iq{type = get,
-                                             xmlns = ?NS_DISCO_INFO,
-                                             lang = Lang}) ->
+handle_dir_iq(State, From, To, Packet, IQ = #iq{type = get,
+                                                xmlns = ?NS_DISCO_INFO,
+                                                lang = Lang}) ->
+    io:format("~p~n~n~p~n",[Packet, IQ]),
     ServerHost = State#state.serverhost,
     Info = ejabberd_hooks:run_fold(
              disco_info, ServerHost, [], [ServerHost, ?MODULE, "", ""]),
@@ -501,13 +541,13 @@ handle_iq(State, From, To, _Packet, IQ = #iq{type = get,
                         }]},
     ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
 
-handle_iq(_State, From, To, Packet, #iq{type = set,
-                                        xmlns = ?NS_DISCO_ITEMS}) ->
+handle_dir_iq(_State, From, To, Packet, #iq{type = set,
+                                            xmlns = ?NS_DISCO_ITEMS}) ->
     Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
     ejabberd_router:route(To, From, Err);
 
-handle_iq(_State, From, To, _Packet, IQ = #iq{type = get,
-                                              xmlns = ?NS_DISCO_ITEMS}) ->
+handle_dir_iq(_State, From, To, _Packet, IQ = #iq{type = get,
+                                                  xmlns = ?NS_DISCO_ITEMS}) ->
     ResIQ = IQ#iq{type = result,
                   sub_el = [{xmlelement,
                              <<"query">>,
@@ -515,35 +555,30 @@ handle_iq(_State, From, To, _Packet, IQ = #iq{type = get,
                              []}]},
     ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
 
-handle_iq(_State, From, To, _Packet, IQ = #iq{type = get,
-                                              xmlns = ?NS_VCARD,
-                                              lang = Lang}) ->
+handle_dir_iq(_State, From, To, _Packet, IQ = #iq{type = get,
+                                                  xmlns = ?NS_VCARD,
+                                                  lang = Lang}) ->
     ResIQ = IQ#iq{type = result,
                   sub_el = [{xmlelement,
                              <<"vCard">>,
                              [{<<"xmlns">>, ?NS_VCARD}],
-                             iq_get_vcard(Lang)}]},
+                             directory_service_vcard(Lang)}]},
     ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
 
-handle_iq(_State, From, To, Packet, _) ->
+handle_dir_iq(_State, From, To, Packet, _) ->
     Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
     ejabberd_router:route(To, From, Err).
 
-%% TODO: temporary hack for eldap which expects strings.
-xdbin2list([]) ->
-    [];
-xdbin2list([{Atom,[Bin]}|Rest]) ->
-    [{Atom,[binary_to_list(Bin)]}|xdbin2list(Rest)].
 
-iq_get_vcard(Lang) ->
+directory_service_vcard(Lang) ->
     [{xmlelement, <<"FN">>, [],
       [{xmlcdata, <<"ejabberd/mod_vcard">>}]},
      {xmlelement, <<"URL">>, [],
       [{xmlcdata, ?EJABBERD_URI}]},
      {xmlelement, <<"DESC">>, [],
       [{xmlcdata, <<(translate:translate(
-		    Lang,
-		    <<"ejabberd vCard module">>))/binary,
+                       Lang,
+                       <<"ejabberd vCard module">>))/binary,
 		    <<"\nCopyright (c) 2003-2011 ProcessOne">>/binary>>}]}].
 
 search_result(Lang, JID, State, Data) ->
@@ -625,12 +660,17 @@ search_items(Entries, State) ->
 		  end
       end, Attributes).
 
-remove_user(_User) ->
-    true.
 
 %%%-----------------------
 %%% Auxiliary functions.
 %%%-----------------------
+
+%% TODO: temporary hack for eldap which expects strings.
+xdbin2list([]) ->
+    [];
+xdbin2list([{Atom,[Bin]}|Rest]) ->
+    [{Atom,[binary_to_list(Bin)]}|xdbin2list(Rest)].
+
 
 map_vcard_attr(VCardName, Attributes, Pattern, UD) ->
     Res = lists:filter(
@@ -666,7 +706,7 @@ find_xdata_el1([_ | Els]) ->
     find_xdata_el1(Els).
 
 parse_options(Host, Opts) ->
-    MyHost = gen_mod:get_opt_host(Host, Opts, "vjud.@HOST@"),
+    DirectoryJID = gen_mod:get_opt_host(Host, Opts, "vjud.@HOST@"),
     Search = gen_mod:get_opt(search, Opts, true),
     Matches = case gen_mod:get_opt(matches, Opts, 30) of
 		infinity  -> 0;
@@ -758,7 +798,7 @@ parse_options(Host, Opts) ->
 			      end
 		      end, SearchReported) ++ UIDAttrs),
     #state{serverhost = Host,
-	   myhost = MyHost,
+	   directory_jid = DirectoryJID,
 	   eldap_id = Eldap_ID,
 	   search = Search,
 	   servers = LDAPServers,
