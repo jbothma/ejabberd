@@ -263,20 +263,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%=======================================
 %% disco_local_features event handler
 %%=======================================
-get_local_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
-    Acc;
-get_local_features(Acc, From, To, Node, Lang) ->
-    case Node of
-	<<>> ->
-	    case Acc of
-		{result, Features} ->
-		    {result, [?NS_VCARD | Features]};
-		empty ->
-		    {result, [?NS_VCARD]}
-	    end;
-	_ ->
-	    Acc
-    end.
+get_local_features({result, Features}, _From, _To, <<>>, _Lang) ->
+    {result, [?NS_VCARD | Features]};
+get_local_features(empty, _From, _To, <<>>, _Lang) ->
+    {result, [?NS_VCARD]};
+get_local_features(Acc, _From, _To, _Node, _Lang) ->
+    Acc.
 
 %%=======================================
 %% ejd_local NS_VCARD iq_handler
