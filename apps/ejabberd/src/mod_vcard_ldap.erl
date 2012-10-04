@@ -108,32 +108,32 @@
 	]).
 
 -define(SEARCH_FIELDS,
-	[{<<"User">>, <<"%u">>},
-	 {<<"Full Name">>, <<"displayName">>},
-	 {<<"Given Name">>, <<"givenName">>},
-	 {<<"Middle Name">>, <<"initials">>},
-	 {<<"Family Name">>, <<"sn">>},
-	 {<<"Nickname">>, <<"%u">>},
-	 {<<"Birthday">>, <<"birthDay">>},
-	 {<<"Country">>, <<"c">>},
-	 {<<"City">>, <<"l">>},
-	 {<<"Email">>, <<"mail">>},
-	 {<<"Organization Name">>, <<"o">>},
-	 {<<"Organization Unit">>, <<"ou">>}
+	[{<<"User">>, "%u"},
+	 {<<"Full Name">>, "displayName"},
+	 {<<"Given Name">>, "givenName"},
+	 {<<"Middle Name">>, "initials"},
+	 {<<"Family Name">>, "sn"},
+	 {<<"Nickname">>, "%u"},
+	 {<<"Birthday">>, "birthDay"},
+	 {<<"Country">>, "c"},
+	 {<<"City">>, "l"},
+	 {<<"Email">>, "mail"},
+	 {<<"Organization Name">>, "o"},
+	 {<<"Organization Unit">>, "ou"}
 	]).
 
 -define(SEARCH_REPORTED,
-	[{<<"Full Name">>, <<"FN">>},
-	 {<<"Given Name">>, <<"FIRST">>},
-	 {<<"Middle Name">>, <<"MIDDLE">>},
-	 {<<"Family Name">>, <<"LAST">>},
-	 {<<"Nickname">>, <<"NICK">>},
-	 {<<"Birthday">>, <<"BDAY">>},
-	 {<<"Country">>, <<"CTRY">>},
-	 {<<"City">>, <<"LOCALITY">>},
-	 {<<"Email">>, <<"EMAIL">>},
-	 {<<"Organization Name">>, <<"ORGNAME">>},
-	 {<<"Organization Unit">>, <<"ORGUNIT">>}
+	[{<<"Full Name">>, "FN"},
+	 {<<"Given Name">>, "GIVEN"},
+	 {<<"Middle Name">>, "MIDDLE"},
+	 {<<"Family Name">>, "FAMILY"},
+	 {<<"Nickname">>, "NICKNAME"},
+	 {<<"Birthday">>, "BDAY"},
+	 {<<"Country">>, "CTRY"},
+	 {<<"City">>, "LOCALITY"},
+	 {<<"Email">>, "EMAIL"},
+	 {<<"Organization Name">>, "ORGNAME"},
+	 {<<"Organization Unit">>, "ORGUNIT"}
 	]).
 
 -define(LFIELD(Label, Var),
@@ -447,8 +447,8 @@ ldap_attribute_to_vcard(_, _) ->
 directory_iq(State, From, To, Packet) ->
     spawn(?MODULE, spawned_dir_iq, [State, From, To, Packet]).
 
-spawned_dir_iq(State, From, To, Packet) ->
-    #jid{user = User, resource = Resource} = To,
+spawned_dir_iq(State, From, #jid{ user = User,
+                                  resource = Resource} = To, Packet) ->
     if
 	(User /= <<>>) or (Resource /= <<>>) ->
 	    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
@@ -580,7 +580,7 @@ search_result(Lang, JID, State, Data) ->
 	       [{xmlcdata, <<(translate:translate(Lang, <<"Search Results for ">>))/binary,
 		 (jlib:jid_to_binary(JID))/binary>>}]},
 	      {xmlelement, <<"reported">>, [],
-	       [?TLFIELD(<<"text-single">>, <<"Jabber ID">>, <<"jid">>)] ++
+	       [?TLFIELD(<<"jid-single">>, <<"Jabber ID">>, <<"jid">>)] ++
 	       lists:map(
 		 fun({Name, Value}) -> ?TLFIELD(<<"text-single">>, Name, Value) end,
 		 SearchReported)
