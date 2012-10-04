@@ -4675,13 +4675,16 @@ consists of the following \modvcardldap{}-specific options:
   \term{"\%s"} will be sequentially replaced 
   with the values of LDAP attributes from \term{List\_of\_LDAP\_attributes},
   \term{"\%u"} will be replaced with the user part of a JID, 
-  and \term{"\%d"} will be replaced with the domain part of a JID. 
+  and \term{"\%d"} will be replaced with the domain part of a JID.
+  The mapping \term{\{"PHOTO", Pattern, [AttrName]\}} is a special case, where Pattern
+  is ignored and always treated as \term{"\%s"} and the photo binary is
+  base64-encoded.
   The default is:
 \begin{verbatim}
 [{"NICKNAME", "%u", []},
  {"FN", "%s", ["displayName"]},
- {"LAST", "%s", ["sn"]},
- {"FIRST", "%s", ["givenName"]},
+ {"FAMILY", "%s", ["sn"]},
+ {"GIVEN", "%s", ["givenName"]},
  {"MIDDLE", "%s", ["initials"]},
  {"ORGNAME", "%s", ["o"]},
  {"ORGUNIT", "%s", ["ou"]},
