@@ -49,11 +49,8 @@
 %%%   {ok,{'and',[{'not',{lessOrEqual,{'AttributeValueAssertion',"uid","100"}}},
 %%%           {present,"mail"}]}}
 %%%-------------------------------------------------------------------
-parse(L) when is_binary(L) ->
-    %% TODO: fix this temporary hack
-    parse(binary_to_list(L), []);
 
-parse(L) when is_list(L) ->
+parse(L) ->
     parse(L, []).
 
 %%%-------------------------------------------------------------------
@@ -82,11 +79,11 @@ parse(L) when is_list(L) ->
 %%%           {equalityMatch,{'AttributeValueAssertion',
 %%%                              "jid",
 %%%                              "xramtsov@gmail.com"}}]}}
+%%%
 %%%-------------------------------------------------------------------
-parse(L, SList) when is_list(L), is_list(SList) ->
-    case catch eldap_filter_yecc:parse(scan(L, SList)) of
-	{'EXIT', _} = Err ->
-	    {error, Err};
+parse(RFC2254_Filter, SList) when is_binary(RFC2254_Filter), is_list(SList) ->
+    Tokens = scan(RFC2254_Filter, SList),
+    case eldap_filter_yecc:parse(Tokens) of
 	{error, {_, _, Msg}} ->
 	    {error, Msg};
 	{ok, Result} ->
@@ -98,45 +95,50 @@ parse(L, SList) when is_list(L), is_list(SList) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
--define(do_scan(L), scan(Rest, [], [{L, 1} | check(Buf, S) ++ Result], L, S)).
+-define(do_scan(OpAtom), scan(Rest, <<>>, [{OpAtom, 1} | check(Buf, SubList) ++ Result], OpAtom, SubList)).
 
-scan(L, SList) ->
-    scan(L, "", [], undefined, SList).
+%% L = Filter string
+%% SList = list of substitution tuples
+scan(L, SubList) ->
+    scan(L, <<>>, [], undefined, SubList).
 
-scan("=*)" ++ Rest, Buf, Result, '(', S) ->
-    scan(Rest, [], [{')', 1}, {'=*', 1} | check(Buf, S) ++ Result], ')', S);
-scan(":dn" ++ Rest, Buf, Result, '(', S) -> ?do_scan(':dn');
-scan(":=" ++ Rest, Buf, Result, '(', S) -> ?do_scan(':=');
-scan(":=" ++ Rest, Buf, Result, ':dn', S) -> ?do_scan(':=');
-scan(":=" ++ Rest, Buf, Result, ':', S) -> ?do_scan(':=');
-scan("~=" ++ Rest, Buf, Result, '(', S) -> ?do_scan('~=');
-scan(">=" ++ Rest, Buf, Result, '(', S) -> ?do_scan('>=');
-scan("<=" ++ Rest, Buf, Result, '(', S) -> ?do_scan('<=');
-scan("="  ++ Rest, Buf, Result, '(', S) -> ?do_scan('=');
-scan(":"  ++ Rest, Buf, Result, '(', S) -> ?do_scan(':');
-scan(":"  ++ Rest, Buf, Result, ':dn', S) -> ?do_scan(':');
-scan("&"  ++ Rest, Buf, Result, '(', S) when Buf=="" -> ?do_scan('&');
-scan("|"  ++ Rest, Buf, Result, '(', S) when Buf=="" -> ?do_scan('|');
-scan("!"  ++ Rest, Buf, Result, '(', S) when Buf=="" -> ?do_scan('!');
-scan("*"  ++ Rest, Buf, Result, '*', S) -> ?do_scan('*');
-scan("*"  ++ Rest, Buf, Result, '=', S) -> ?do_scan('*');
-scan("("  ++ Rest, Buf, Result, _, S) -> ?do_scan('(');
-scan(")"  ++ Rest, Buf, Result, _, S) -> ?do_scan(')');
-scan([Letter | Rest], Buf, Result, PreviosAtom, S) ->
-    scan(Rest, [Letter|Buf], Result, PreviosAtom, S);
-scan([], Buf, Result, _, S) ->
-    lists:reverse(check(Buf, S) ++ Result).
+%%
+%% scan(<<Consumed, Rest>>, Buff, Result, SubstList) -> []
+%%
+scan(<<"=*)", Rest/binary>>, Buf, Result, '(',   SubList) ->
+    scan(Rest, <<>>, [{')', 1}, {'=*', 1} | check(Buf, SubList) ++ Result], ')', SubList);
+scan(<<":dn", Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan(':dn');
+scan(<<":=",  Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan(':=');
+scan(<<":=",  Rest/binary>>, Buf, Result, ':dn', SubList) -> ?do_scan(':=');
+scan(<<":=",  Rest/binary>>, Buf, Result, ':',   SubList) -> ?do_scan(':=');
+scan(<<"~=",  Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan('~=');
+scan(<<">=",  Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan('>=');
+scan(<<"<=",  Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan('<=');
+scan(<<"=",   Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan('=');
+scan(<<":",   Rest/binary>>, Buf, Result, '(',   SubList) -> ?do_scan(':');
+scan(<<":",   Rest/binary>>, Buf, Result, ':dn', SubList) -> ?do_scan(':');
+scan(<<"&",   Rest/binary>>, Buf, Result, '(',   SubList) when Buf==<<"">> -> ?do_scan('&');
+scan(<<"|",   Rest/binary>>, Buf, Result, '(',   SubList) when Buf==<<"">> -> ?do_scan('|');
+scan(<<"!",   Rest/binary>>, Buf, Result, '(',   SubList) when Buf==<<"">> -> ?do_scan('!');
+scan(<<"*",   Rest/binary>>, Buf, Result, '*',   SubList) -> ?do_scan('*');
+scan(<<"*",   Rest/binary>>, Buf, Result, '=',   SubList) -> ?do_scan('*');
+scan(<<"(",   Rest/binary>>, Buf, Result, _,     SubList) -> ?do_scan('(');
+scan(<<")",   Rest/binary>>, Buf, Result, _,     SubList) -> ?do_scan(')');
+scan(<<Letter:8, Rest/binary>>, Buf, Result, PreviousAtom, SubList) ->
+    scan(Rest, <<Buf/binary, Letter:8>>, Result, PreviousAtom, SubList);
+scan(<<>>,                   Buf, Result, _,     SubList) ->
+    lists:reverse(check(Buf, SubList) ++ Result).
 
-check([], _) ->
+check(<<>>, _) ->
     [];
 check(Buf, S) ->
-    [{str, 1, do_sub(lists:reverse(Buf), S)}].
+    [{str, 1, do_sub(Buf, S)}].
 
 do_sub(S, []) ->
     S;
 
-do_sub([], _) ->
-    [];
+do_sub(<<>>, _) ->
+    <<>>;
 
 do_sub(S, [{RegExp, New} | T]) ->
     Result = do_sub(S, {RegExp, replace_specials(New)}, 1),

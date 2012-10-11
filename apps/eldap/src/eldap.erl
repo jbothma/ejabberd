@@ -251,15 +251,13 @@ modify_passwd(Handle, DN, Passwd) when is_list(DN), is_list(Passwd) ->
 %%% Bind.
 %%% Example:
 %%%
-%%%  bind(Handle, 
+%%%  bind(Handle,
 %%%    "cn=Bill Valentine, ou=people, o=Bluetail AB, dc=bluetail, dc=com",
 %%%    "secret")
 %%% --------------------------------------------------------------------
-bind(Handle, RootDN, Passwd) 
-  when is_list(RootDN), is_binary(Passwd) ->
+bind(Handle, RootDN, Passwd) ->
     Handle1 = get_handle(Handle),
-    PasswdStr = binary_to_list(Passwd),
-    gen_fsm:sync_send_event(Handle1, {bind, RootDN, PasswdStr}, ?CALL_TIMEOUT).
+    gen_fsm:sync_send_event(Handle1, {bind, RootDN, Passwd}, ?CALL_TIMEOUT).
 
 %%% Sanity checks !
 
@@ -377,7 +375,10 @@ present(Attribute) when is_list(Attribute) ->
 %%% Example: substrings("sn",[{initial,"To"},{any,"kv"},{final,"st"}])
 %%% will match entries containing:  'sn: Tornkvist'
 %%%
-substrings(Type, SubStr) when is_list(Type), is_list(SubStr) -> 
+%% TODO: another hack before switching this to binaries
+%substrings(Type, SubStr) when is_binary(Type), is_list(SubStr) ->
+%    substrings(binary_to_list(Type), SubStr);
+substrings(Type, SubStr) when is_list(SubStr) ->
     Ss = {'SubstringFilter_substrings',v_substr(SubStr)},
     {substrings,#'SubstringFilter'{type = Type,
 				   substrings = Ss}}.
@@ -950,7 +951,14 @@ polish(Entries) ->
 
 polish([H|T], Res, Ref) when is_record(H, 'SearchResultEntry') ->
     ObjectName = H#'SearchResultEntry'.objectName,
-    F = fun({_,A,V}) -> {A,V} end,
+    %% attributes is a PartialAttributeList is a sequence of type, vals
+    %% vals is a set of AttributeValue. These are Octet Strings, i.e. lists of
+    %% byte integers. Since most attribute vals are representing UTF-8 strings
+    %% (RFC2252) and the jpegPhoto attribute is just that, this looks like a decent
+    %% place to convert to binaries. The correct way to represent UTF-8 in Erlang
+    %% is as a binary. Lists should be unicode codepoints and not UTF-8 bytes.
+    %% AtributeDescriptions are also Octed Strings
+    F = fun({_,A,V}) -> {list_to_binary(A), list_to_binary(V)} end,
     Attrs = lists:map(F, H#'SearchResultEntry'.attributes),
     polish(T, [#eldap_entry{object_name = ObjectName,
 			    attributes  = Attrs}|Res], Ref);
@@ -1070,7 +1078,7 @@ v_timeout(I) when is_integer(I), I>=0 -> I;
 v_timeout(_I) -> throw({error,concat(["timeout not positive integer: ",_I])}).
 
 v_attributes(Attrs) ->
-    F = fun(A) when is_list(A) -> A;
+    F = fun(A) when is_binary(A) -> A;
 	   (A) -> throw({error,concat(["attribute not String: ",A])})
 	end,
     lists:map(F,Attrs).

@@ -661,8 +661,8 @@ search_items(Entries, State) ->
 %% TODO: temporary hack for eldap which expects strings.
 xdbin2list([]) ->
     [];
-xdbin2list([{Atom,[Bin]}|Rest]) ->
-    [{Atom,[binary_to_list(Bin)]}|xdbin2list(Rest)].
+xdbin2list([{Bin1,[Bin2]}|Rest]) when is_binary(Bin1), is_binary(Bin2) ->
+    [{binary_to_list(Bin1),[binary_to_list(Bin2)]}|xdbin2list(Rest)].
 
 
 %% UD is {user, domain}
@@ -743,29 +743,34 @@ parse_options(Host, Opts) ->
 	           end,
     LDAPBase = case gen_mod:get_opt(ldap_base, Opts, undefined) of
 		   undefined ->
-		       ejabberd_config:get_local_option({ldap_base, Host});
-		   B -> B
+                       list_to_binary(
+                         ejabberd_config:get_local_option({ldap_base, Host}));
+		   B -> list_to_binary(B)
 	       end,
 	UIDs = case gen_mod:get_opt(ldap_uids, Opts, undefined) of
 	    undefined ->
 		    case ejabberd_config:get_local_option({ldap_uids, Host}) of
-			undefined -> [{"uid", "%u"}];
-			UI -> eldap_utils:uids_domain_subst(Host, UI)
+			undefined -> [{<<"uid">>, <<"%u">>}];
+			UI ->
+                            UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
+                            eldap_utils:uids_domain_subst(Host, UIBin)
 			end;
-		UI -> eldap_utils:uids_domain_subst(Host, UI)
+		UI ->
+                       UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
+                       eldap_utils:uids_domain_subst(Host, UIBin)
 		end,
     RootDN = case gen_mod:get_opt(ldap_rootdn, Opts, undefined) of
 		 undefined ->
 		     case ejabberd_config:get_local_option({ldap_rootdn, Host}) of
-			 undefined -> "";
-			 RDN -> RDN
+			 undefined -> <<"">>;
+			 RDN -> list_to_binary(RDN)
 		     end;
 		 RDN -> RDN
 	     end,
     Password = case gen_mod:get_opt(ldap_password, Opts, undefined) of
 		   undefined ->
 		       case ejabberd_config:get_local_option({ldap_password, Host}) of
-			   undefined -> "";
+			   undefined -> <<"">>;
 			   Pass -> Pass
 		       end;
 		   Pass -> Pass
@@ -776,13 +781,13 @@ parse_options(Host, Opts) ->
 			 case ejabberd_config:get_local_option({ldap_filter, Host}) of
 			     undefined -> SubFilter;
 			     "" -> SubFilter;
-			     F -> "(&" ++ SubFilter ++ F ++ ")"
+			     F -> <<"(&", SubFilter/binary, F, ")">>
 			 end;
 		     "" -> SubFilter;
-		     F -> "(&" ++ SubFilter ++ F ++ ")"
+		     F -> <<"(&", SubFilter/binary, F/binary, ")">>
 		 end,
     {ok, SearchFilter} = eldap_filter:parse(
-			   eldap_filter:do_sub(UserFilter, [{"%u","*"}])),
+			   eldap_filter:do_sub(UserFilter, [{<<"%u">>,<<"*">>}])),
     VCardMap = gen_mod:get_opt(ldap_vcard_map, Opts, ?VCARD_MAP),
     SearchFields = gen_mod:get_opt(ldap_search_fields, Opts, ?SEARCH_FIELDS),
     SearchReported = gen_mod:get_opt(ldap_search_reported, Opts, ?SEARCH_REPORTED),
@@ -822,3 +827,21 @@ parse_options(Host, Opts) ->
 	   search_reported_attrs = SearchReportedAttrs,
 	   matches = Matches
 	  }.
+
+ldap_uids_to_bin({Attr}) ->
+    {list_to_binary(Attr)};
+ldap_uids_to_bin({Attr, Format}) ->
+    {list_to_binary(Attr), list_to_binary(Format)}.
+
+ldap_dn_filter_to_bin({Filter, FilterAttrs}) ->
+    FilterAttrsBin = lists:map(fun erlang:list_to_binary/1, FilterAttrs),
+    {list_to_binary(Filter), FilterAttrsBin}.
+
+ldap_local_filter_to_bin(undefined) ->
+    undefined;
+ldap_local_filter_to_bin([]) ->
+    [];
+ldap_local_filter_to_bin([{Atom, {AttrName, AttrVals}}|Rest]) ->
+    AttrValsBin = lists:map(fun erlang:list_to_binary/1, AttrVals),
+    [{Atom, {list_to_binary(AttrName), AttrValsBin}}
+     | ldap_local_filter_to_bin(Rest)].
