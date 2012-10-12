@@ -74,7 +74,7 @@
 		ufilter,
 		sfilter,
 		lfilter, %% Local filter (performed by ejabberd, not LDAP)
-        local_filter_attrs = undefined,
+                local_filter_attrs = undefined,
 		dn_filter,
 		dn_filter_attrs
 	       }).
@@ -446,11 +446,13 @@ parse_options(Host) ->
 	   ufilter = UserFilter,
 	   sfilter = SearchFilter,
 	   lfilter = LocalFilterBin,
-       local_filter_attrs = LFilterAttrs,
+           local_filter_attrs = LFilterAttrs,
 	   dn_filter = DNFilter,
 	   dn_filter_attrs = DNFilterAttrs
 	  }.
 
+get_lfilter_attrs(undefined) ->
+    [];
 get_lfilter_attrs([]) ->
     [];
 get_lfilter_attrs([{_, {Attr, _}}|Rest]) ->

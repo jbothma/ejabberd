@@ -766,21 +766,22 @@ parse_options(Host, Opts) ->
 	     end,
     Password = case gen_mod:get_opt(ldap_password, Opts, undefined) of
 		   undefined ->
-		       case ejabberd_config:get_local_option({ldap_password, Host}) of
+		       case ejabberd_config:get_local_option(
+                              {ldap_password, Host}) of
 			   undefined -> <<"">>;
 			   Pass -> Pass
 		       end;
 		   Pass -> Pass
 	       end,
     SubFilter = eldap_utils:generate_subfilter(UIDs),
-    RFC4515Filt = list_to_binary(
-                    gen_mod:get_opt(
+    RFC4515Filt = gen_mod:get_opt(
                       ldap_filter, Opts, ejabberd_config:get_local_option(
-                                           {ldap_filter, Host}))),
+                                           {ldap_filter, Host})),
     UserFilter = case RFC4515Filt of
                      undefined -> SubFilter;
                      "" -> SubFilter;
-                     F -> <<"(&", SubFilter/binary, F/binary, ")">>
+                     F ->
+                         <<"(&",SubFilter/binary,(list_to_binary(F))/binary,")">>
                  end,
     {ok, SearchFilter} = eldap_filter:parse(
 			   eldap_filter:do_sub(UserFilter, [{<<"%u">>,<<"*">>}])),
