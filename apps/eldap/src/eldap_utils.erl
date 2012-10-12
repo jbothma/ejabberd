@@ -37,6 +37,8 @@
 	 case_insensitive_match/2,
 	 uids_domain_subst/2]).
 
+-include_lib("eunit/include/eunit.hrl").
+
 %% Generate an 'or' LDAP query on one or several attributes
 %% If there is only one attribute
 generate_subfilter([UID]) ->
@@ -83,15 +85,14 @@ usort_attrs(_) ->
     [].
 
 get_user_part(String, Pattern) ->
-    {First,_} = binary:match(Pattern, <<"%u">>),
-    TailLength = byte_size(Pattern) - (First+1),
-    Result = string:sub_string(String, First, byte_size(String) - TailLength),
-    StringRes = re:replace(Pattern, <<"%u">>, Result, [{return, binary}]),
-    case (case_insensitive_match(StringRes, String)) of
-        true ->
-            {ok, Result};
-        false ->
-            {error, badmatch}
+    case binary:match(Pattern, <<"%u">>) of
+        nomatch -> {error, badmatch};
+        {Start, Length} ->
+            TailLen = byte_size(Pattern) - (Start + Length),
+            StringHeadAndUserLen = byte_size(String) - TailLen,
+            UserLen = StringHeadAndUserLen - Start,
+            %% binary:part/2 returns the binary or crashes
+            {ok, binary:part(String, {Start, UserLen})}
     end.
 
 make_filter(Data, UIDs) ->
@@ -140,3 +141,15 @@ uids_domain_subst(Host, UIDs) ->
                   (A) -> A
               end,
               UIDs).
+
+
+%%======================================
+%% eunit
+%%======================================
+
+get_user_part_test() ->
+    ?assertEqual(<<"john">>, get_user_part(<<"john">>, <<"%u">>)),
+    ?assertEqual(<<"john">>, get_user_part(
+                               <<"john@domain.com">>, <<"%u@domain.com">>)),
+    ?assertEqual(<<"john">>, get_user_part(
+                               <<"blahjohn@domain.com">>, <<"blah%u@domain.com">>)).

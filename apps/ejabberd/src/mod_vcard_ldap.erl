@@ -108,32 +108,32 @@
 	]).
 
 -define(SEARCH_FIELDS,
-	[{<<"User">>, "%u"},
-	 {<<"Full Name">>, "displayName"},
-	 {<<"Given Name">>, "givenName"},
-	 {<<"Middle Name">>, "initials"},
-	 {<<"Family Name">>, "sn"},
-	 {<<"Nickname">>, "%u"},
-	 {<<"Birthday">>, "birthDay"},
-	 {<<"Country">>, "c"},
-	 {<<"City">>, "l"},
-	 {<<"Email">>, "mail"},
-	 {<<"Organization Name">>, "o"},
-	 {<<"Organization Unit">>, "ou"}
+	[{"User", "%u"},
+	 {"Full Name", "displayName"},
+	 {"Given Name", "givenName"},
+	 {"Middle Name", "initials"},
+	 {"Family Name", "sn"},
+	 {"Nickname", "%u"},
+	 {"Birthday", "birthDay"},
+	 {"Country", "c"},
+	 {"City", "l"},
+	 {"Email", "mail"},
+	 {"Organization Name", "o"},
+	 {"Organization Unit", "ou"}
 	]).
 
 -define(SEARCH_REPORTED,
-	[{<<"Full Name">>, "FN"},
-	 {<<"Given Name">>, "GIVEN"},
-	 {<<"Middle Name">>, "MIDDLE"},
-	 {<<"Family Name">>, "FAMILY"},
-	 {<<"Nickname">>, "NICKNAME"},
-	 {<<"Birthday">>, "BDAY"},
-	 {<<"Country">>, "CTRY"},
-	 {<<"City">>, "LOCALITY"},
-	 {<<"Email">>, "EMAIL"},
-	 {<<"Organization Name">>, "ORGNAME"},
-	 {<<"Organization Unit">>, "ORGUNIT"}
+	[{"Full Name", "FN"},
+	 {"Given Name", "GIVEN"},
+	 {"Middle Name", "MIDDLE"},
+	 {"Family Name", "FAMILY"},
+	 {"Nickname", "NICKNAME"},
+	 {"Birthday", "BDAY"},
+	 {"Country", "CTRY"},
+	 {"City", "LOCALITY"},
+	 {"Email", "EMAIL"},
+	 {"Organization Name", "ORGNAME"},
+	 {"Organization Unit", "ORGUNIT"}
 	]).
 
 -define(LFIELD(Label, Var),
@@ -237,7 +237,8 @@ handle_info({route, From, To, Packet}, State) ->
     case directory_iq(State, From, To, Packet) of
 	Pid when is_pid(Pid) ->
 	    ok;
-	_ ->
+	Else ->
+            ?ERROR_MSG("~p", [Else]),
 	    Err = jlib:make_error_reply(Packet, ?ERR_INTERNAL_SERVER_ERROR),
 	    ejabberd_router:route(To, From, Err)
     end,
@@ -300,7 +301,8 @@ process_local_iq(_From, _To, #iq{ type = get,
 %%=======================================
 process_sm_iq(_From, #jid{lserver=LServer} = To, #iq{sub_el = SubEl} = IQ) ->
     case process_vcard_ldap(To, IQ, LServer) of
-	{'EXIT', _} ->
+	{'EXIT', _} = Exit ->
+            ?ERROR_MSG("~p", [Exit]),
 	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_INTERNAL_SERVER_ERROR]};
 	Other ->
 	    Other
@@ -343,7 +345,7 @@ find_ldap_user(User, State) ->
     RFC2254_Filter = State#state.user_filter,
     Eldap_ID = State#state.eldap_id,
     VCardAttrs = State#state.vcard_map_attrs,
-    case eldap_filter:parse(RFC2254_Filter, [{"%u", User}]) of
+    case eldap_filter:parse(RFC2254_Filter, [{<<"%u">>, User}]) of
 	{ok, EldapFilter} ->
 	    case eldap_pool:search(Eldap_ID, [{base, Base},
 					 {filter, EldapFilter},
@@ -486,7 +488,7 @@ handle_dir_iq(State, From, To, Packet, IQ = #iq{type = set,
                                 [{xmlelement, <<"x">>,
                                   [{<<"xmlns">>, ?NS_XDATA},
                                    {<<"type">>, <<"result">>}],
-                                  search_result(Lang, To, State, xdbin2list(XData))
+                                  search_result(Lang, To, State, XData)
                                  }]}]},
                     ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ))
             end
@@ -614,56 +616,51 @@ search_items(Entries, State) ->
     LServer = State#state.serverhost,
     SearchReported = State#state.search_reported,
     VCardMap = State#state.vcard_map,
-	UIDs = State#state.uids,
-    Attributes = lists:map(
-		   fun(E) ->
-			   #eldap_entry{attributes = Attrs} = E,
-			   Attrs
-		   end, Entries),
+    UIDs = State#state.uids,
+    AttributeLists = lists:map(
+                       fun(#eldap_entry{attributes = Attrs}) -> Attrs end,
+                       Entries),
     lists:flatmap(
       fun(Attrs) ->
-	      case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
-	      {U, UIDAttrFormat} ->
-	          case eldap_utils:get_user_part(U, UIDAttrFormat) of
-		      {ok, Username} ->
-		          case ejabberd_auth:is_user_exists(Username, LServer) of
-			      true ->
-			        RFields = lists:map(
-					  fun({_, VCardName}) ->
-						  {VCardName,
-						   map_vcard_attr(
-						     VCardName,
-						     Attrs,
-						     VCardMap,
-						     {Username, ?MYNAME})}
-					  end, SearchReported),
-			        Result = [?FIELD(<<"jid">>,
-                                                 list_to_binary(
-                                                   Username ++ "@" ++ LServer))] ++
-				    [?FIELD(Name, Value) || {Name, Value} <- RFields],
-			        [{xmlelement, <<"item">>, [], Result}];
-			      _ ->
-			          []
-		          end;
-		      _ ->
-		         []
-	          end;
-          "" ->
-		      []
-		  end
-      end, Attributes).
+              attr_list_to_search_item(Attrs,UIDs,VCardMap,SearchReported,LServer)
+      end, AttributeLists).
 
+attr_list_to_search_item(Attrs, UIDs, VCardMap, SearchReported, LServer) ->
+    case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
+        {U, UIDAttrFormat} ->
+            case eldap_utils:get_user_part(U, UIDAttrFormat) of
+                {ok, Username} ->
+                    case ejabberd_auth:is_user_exists(Username, LServer) of
+                        true ->
+                            RFields = lists:map(
+                                        fun({_, VCardName}) ->
+                                                {VCardName,
+                                                 map_vcard_attr(
+                                                   VCardName,
+                                                   Attrs,
+                                                   VCardMap,
+                                                   {Username, ?MYNAME})}
+                                        end, SearchReported),
+                            JIDFieldEl =
+                                ?FIELD(<<"jid">>,
+                                       <<Username/binary, "@", LServer/binary>>),
+                            RFieldEls =
+                                [?FIELD(Name, Value) || {Name, Value} <- RFields],
+                            Result = [JIDFieldEl | RFieldEls],
+                            [{xmlelement, <<"item">>, [], Result}];
+                        _ ->
+                            []
+                    end;
+                _ ->
+                    []
+            end;
+        <<"">> ->
+            []
+    end.
 
 %%%-----------------------
 %%% Auxiliary functions.
 %%%-----------------------
-
-%% TODO: temporary hack for eldap which expects strings.
-xdbin2list([]) ->
-    [];
-xdbin2list([{Bin1,[Bin2]}|Rest]) when is_binary(Bin1), is_binary(Bin2) ->
-    [{binary_to_list(Bin1),[binary_to_list(Bin2)]}|xdbin2list(Rest)].
-
 
 %% UD is {user, domain}
 map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
@@ -678,7 +675,7 @@ map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
         %% {"PHOTO", "%s", [PhotoAttr | IgnoredAttrs ]} because actually
         %% replacing a photo is too expensive via eldap_filter -> re
         %% Too expensive here means a 40k jpeg took 3.7 seconds to replace.
-	[{"PHOTO", _, [LDAPAttrName|_]}] ->
+	[{<<"PHOTO">>, _, [LDAPAttrName|_]}] ->
             JpegBinByteList = eldap_utils:get_ldap_attr(LDAPAttrName, Attributes),
             base64:encode(JpegBinByteList);
 	[{_, VCardFieldTemplate, LDAPAttrNames}] ->
@@ -689,8 +686,8 @@ map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
     end.
 
 process_pattern(VCardFieldTemplate, {User, Domain}, AttrValues) ->
-    StringSubTups = [{"%s", Value, 1} || Value <- AttrValues],
-    SubTuples = [{"%u", User}, {"%d", Domain}] ++ StringSubTups,
+    StringSubTups = [{<<"%s">>, Value, 1} || Value <- AttrValues],
+    SubTuples = [{<<"%u">>, User}, {<<"%d">>, Domain}] ++ StringSubTups,
     eldap_filter:do_sub(VCardFieldTemplate, SubTuples).
 
 find_xdata_el({xmlelement, _Name, _Attrs, SubEls}) ->
@@ -775,36 +772,38 @@ parse_options(Host, Opts) ->
 		       end;
 		   Pass -> Pass
 	       end,
-    SubFilter = lists:flatten(eldap_utils:generate_subfilter(UIDs)),
-    UserFilter = case gen_mod:get_opt(ldap_filter, Opts, undefined) of
-		     undefined ->
-			 case ejabberd_config:get_local_option({ldap_filter, Host}) of
-			     undefined -> SubFilter;
-			     "" -> SubFilter;
-			     F -> <<"(&", SubFilter/binary, F, ")">>
-			 end;
-		     "" -> SubFilter;
-		     F -> <<"(&", SubFilter/binary, F/binary, ")">>
-		 end,
+    SubFilter = eldap_utils:generate_subfilter(UIDs),
+    RFC4515Filt = list_to_binary(
+                    gen_mod:get_opt(
+                      ldap_filter, Opts, ejabberd_config:get_local_option(
+                                           {ldap_filter, Host}))),
+    UserFilter = case RFC4515Filt of
+                     undefined -> SubFilter;
+                     "" -> SubFilter;
+                     F -> <<"(&", SubFilter/binary, F/binary, ")">>
+                 end,
     {ok, SearchFilter} = eldap_filter:parse(
 			   eldap_filter:do_sub(UserFilter, [{<<"%u">>,<<"*">>}])),
     VCardMap = gen_mod:get_opt(ldap_vcard_map, Opts, ?VCARD_MAP),
+    VCardMapBin = vcard_map_to_bin(VCardMap),
     SearchFields = gen_mod:get_opt(ldap_search_fields, Opts, ?SEARCH_FIELDS),
+    SearchFieldsBin = search_fields_to_bin(SearchFields),
     SearchReported = gen_mod:get_opt(ldap_search_reported, Opts, ?SEARCH_REPORTED),
+    SearchReportedBin = search_fields_to_bin(SearchReported),
     %% In search requests we need to fetch only attributes defined
     %% in vcard-map and search-reported. In some cases,
     %% this will essentially reduce network traffic from an LDAP server.
 	UIDAttrs = [UAttr || {UAttr, _} <- UIDs],
     VCardMapAttrs = lists:usort(
-		      lists:append([A || {_, _, A} <- VCardMap]) ++ UIDAttrs),
+		      lists:append([A || {_, _, A} <- VCardMapBin]) ++ UIDAttrs),
     SearchReportedAttrs =
 	lists:usort(lists:flatmap(
 		      fun({_, N}) ->
-			      case lists:keysearch(N, 1, VCardMap) of
+			      case lists:keysearch(N, 1, VCardMapBin) of
 				  {value, {_, _, L}} -> L;
 				  _ -> []
 			      end
-		      end, SearchReported) ++ UIDAttrs),
+		      end, SearchReportedBin) ++ UIDAttrs),
     #state{serverhost = Host,
 	   directory_jid = DirectoryJID,
 	   eldap_id = Eldap_ID,
@@ -818,12 +817,12 @@ parse_options(Host, Opts) ->
 	   base = LDAPBase,
 	   password = Password,
 	   uids = UIDs,
-	   vcard_map = VCardMap,
+	   vcard_map = VCardMapBin,
 	   vcard_map_attrs = VCardMapAttrs,
 	   user_filter = UserFilter,
 	   search_filter = SearchFilter,
-	   search_fields = SearchFields,
-	   search_reported = SearchReported,
+	   search_fields = SearchFieldsBin,
+	   search_reported = SearchReportedBin,
 	   search_reported_attrs = SearchReportedAttrs,
 	   matches = Matches
 	  }.
@@ -833,15 +832,15 @@ ldap_uids_to_bin({Attr}) ->
 ldap_uids_to_bin({Attr, Format}) ->
     {list_to_binary(Attr), list_to_binary(Format)}.
 
-ldap_dn_filter_to_bin({Filter, FilterAttrs}) ->
-    FilterAttrsBin = lists:map(fun erlang:list_to_binary/1, FilterAttrs),
-    {list_to_binary(Filter), FilterAttrsBin}.
-
-ldap_local_filter_to_bin(undefined) ->
-    undefined;
-ldap_local_filter_to_bin([]) ->
+vcard_map_to_bin([]) ->
     [];
-ldap_local_filter_to_bin([{Atom, {AttrName, AttrVals}}|Rest]) ->
-    AttrValsBin = lists:map(fun erlang:list_to_binary/1, AttrVals),
-    [{Atom, {list_to_binary(AttrName), AttrValsBin}}
-     | ldap_local_filter_to_bin(Rest)].
+vcard_map_to_bin([{VCField, Pattern, LDAPAttrNames}|Rest]) ->
+    VCFieldBin = list_to_binary(VCField),
+    PatternBin = list_to_binary(Pattern),
+    LDAPAttrNameBins = lists:map(fun erlang:list_to_binary/1, LDAPAttrNames),
+    [{VCFieldBin, PatternBin, LDAPAttrNameBins}|vcard_map_to_bin(Rest)].
+
+search_fields_to_bin([]) ->
+    [];
+search_fields_to_bin([{FieldHead, Var}|Rest]) ->
+    [{list_to_binary(FieldHead),list_to_binary(Var)}|search_fields_to_bin(Rest)].

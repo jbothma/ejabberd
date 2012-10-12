@@ -286,8 +286,9 @@ find_user_dn(User, State) ->
 				   [{base, State#state.base},
 				    {filter, Filter},
 				    {attributes, ResAttrs}]) of
-		#eldap_search_result{entries = [#eldap_entry{attributes = Attrs,
-							     object_name = DN} | _]} ->
+		#eldap_search_result{
+                   entries = [#eldap_entry{attributes = Attrs,
+                                           object_name = DN} | _]} ->
 		    dn_filter(DN, Attrs, State);
 		_ ->
 		    false
@@ -344,7 +345,8 @@ is_valid_dn(DN, Attrs, State) ->
 %% {ldap_local_filter, {notequal, {<<"accountStatus">>,[<<"disabled">>]}}}
 check_local_filter(_Attrs, #state{lfilter = undefined}) ->
     true;
-check_local_filter(Attrs, #state{lfilter = LocalFilters}) when is_list(LocalFilters) ->
+check_local_filter(Attrs, #state{lfilter = LocalFilters})
+  when is_list(LocalFilters) ->
     lists:all(fun({Operation, FilterMatch}) ->
                    local_filter(Operation, Attrs, FilterMatch)
               end,

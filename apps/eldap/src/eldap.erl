@@ -356,7 +356,7 @@ av_assert(Desc, Value) ->
 %%%
 %%% Filter to check for the presence of an attribute
 %%%
-present(Attribute) when is_list(Attribute) -> 
+present(Attribute) when is_binary(Attribute) -> 
     {present, Attribute}.
 
 
@@ -375,9 +375,6 @@ present(Attribute) when is_list(Attribute) ->
 %%% Example: substrings("sn",[{initial,"To"},{any,"kv"},{final,"st"}])
 %%% will match entries containing:  'sn: Tornkvist'
 %%%
-%% TODO: another hack before switching this to binaries
-%substrings(Type, SubStr) when is_binary(Type), is_list(SubStr) ->
-%    substrings(binary_to_list(Type), SubStr);
 substrings(Type, SubStr) when is_list(SubStr) ->
     Ss = {'SubstringFilter_substrings',v_substr(SubStr)},
     {substrings,#'SubstringFilter'{type = Type,
@@ -942,30 +939,35 @@ cmd_timeout(Timer, Id, S) ->
 %%-----------------------------------------------------------------------
 %% Common stuff for results
 %%-----------------------------------------------------------------------
-%%%
-%%% Polish the returned search result
-%%%
+%%
+%% Polish the returned search result
+%%
+%% attributes is a PartialAttributeList is a sequence of {type, vals}.
+%% vals is a set of AttributeValue. These are OCTET STRING, i.e. lists of
+%% byte integers. Since most attribute vals are representing UTF-8 strings
+%% (RFC2252) and the jpegPhoto attribute is just that, this looks like a decent
+%% place to convert to binaries. The correct way to represent UTF-8 in Erlang
+%% is as a binary. Lists should be unicode codepoints and not UTF-8 bytes.
+%% AtributeDescriptions are also OCTET STRING
+%% objectName is also OCTET STRING
 
 polish(Entries) ->
     polish(Entries, [], []).
 
-polish([H|T], Res, Ref) when is_record(H, 'SearchResultEntry') ->
+polish([H|T], Result, Ref) when is_record(H, 'SearchResultEntry') ->
     ObjectName = H#'SearchResultEntry'.objectName,
-    %% attributes is a PartialAttributeList is a sequence of type, vals
-    %% vals is a set of AttributeValue. These are Octet Strings, i.e. lists of
-    %% byte integers. Since most attribute vals are representing UTF-8 strings
-    %% (RFC2252) and the jpegPhoto attribute is just that, this looks like a decent
-    %% place to convert to binaries. The correct way to represent UTF-8 in Erlang
-    %% is as a binary. Lists should be unicode codepoints and not UTF-8 bytes.
-    %% AtributeDescriptions are also Octed Strings
-    F = fun({_,A,V}) -> {list_to_binary(A), list_to_binary(V)} end,
+    F = fun({_,AttrDesc,AttrVal}) ->
+                {list_to_binary(AttrDesc),
+                 lists:map(fun erlang:list_to_binary/1, AttrVal)}
+        end,
     Attrs = lists:map(F, H#'SearchResultEntry'.attributes),
-    polish(T, [#eldap_entry{object_name = ObjectName,
-			    attributes  = Attrs}|Res], Ref);
-polish([H|T], Res, Ref) ->     % No special treatment of referrals at the moment.
-    polish(T, Res, [H|Ref]);
-polish([], Res, Ref) ->
-    {Res, Ref}.
+    PolishedHead = #eldap_entry{object_name = list_to_binary(ObjectName),
+                                attributes  = Attrs},
+    polish(T, [PolishedHead|Result], Ref);
+polish([H|T], Result, Ref) ->     % No special treatment of referrals at the moment.
+    polish(T, Result, [H|Ref]);
+polish([], Result, Ref) ->
+    {Result, Ref}.
 
 %%-----------------------------------------------------------------------
 %% Connect to next server in list and attempt to bind to it.
@@ -1063,7 +1065,7 @@ v_substr([{Key,Str}|T]) when is_list(Str),Key==initial;Key==any;Key==final ->
     [{Key,Str}|v_substr(T)];
 v_substr([H|_]) ->
     throw({error,{substring_arg,H}});
-v_substr([]) -> 
+v_substr([]) ->
     [].
 v_scope(baseObject)   -> baseObject;
 v_scope(singleLevel)  -> singleLevel;
@@ -1079,7 +1081,7 @@ v_timeout(_I) -> throw({error,concat(["timeout not positive integer: ",_I])}).
 
 v_attributes(Attrs) ->
     F = fun(A) when is_binary(A) -> A;
-	   (A) -> throw({error,concat(["attribute not String: ",A])})
+	   (A) -> throw({error,concat(["attribute not binary: ",A])})
 	end,
     lists:map(F,Attrs).
 
