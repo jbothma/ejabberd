@@ -148,8 +148,8 @@ uids_domain_subst(Host, UIDs) ->
 %%======================================
 
 get_user_part_test() ->
-    ?assertEqual(<<"john">>, get_user_part(<<"john">>, <<"%u">>)),
-    ?assertEqual(<<"john">>, get_user_part(
-                               <<"john@domain.com">>, <<"%u@domain.com">>)),
-    ?assertEqual(<<"john">>, get_user_part(
-                               <<"blahjohn@domain.com">>, <<"blah%u@domain.com">>)).
+    ?assertEqual({ok, <<"john">>}, get_user_part(<<"john">>, <<"%u">>)),
+    ?assertEqual({ok, <<"john">>}, get_user_part(<<"john@domain.com">>,
+                                                 <<"%u@domain.com">>)),
+    ?assertEqual({ok, <<"john">>}, get_user_part(<<"blahjohn@domain.com">>,
+                                                 <<"blah%u@domain.com">>)).
