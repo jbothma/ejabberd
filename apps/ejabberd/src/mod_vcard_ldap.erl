@@ -4,6 +4,9 @@
 %%% Purpose : Support for VCards from LDAP storage.
 %%% Created :  2 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
+%%% The job of this as a gen_server is to hold the configuration for
+%%% mod_vcard_ldap operations for this vhost in its state instead of looking
+%%% everything up from the the config DB all the time.
 %%%
 %%% ejabberd, Copyright (C) 2002-2011   ProcessOne
 %%%
@@ -45,29 +48,26 @@
 	 stop/1]).
 
 %% event hooks and iq handlers
--export([
-	 get_local_features/5,
+-export([get_local_features/5,
 	 process_local_iq/3,
 	 process_sm_iq/3
         ]).
 
-%% for spawn. TODO: not sure why this gets spawned
--export([
-         spawned_dir_iq/4
+%% for spawn. TODO: not sure why this gets spawned. I think it's to make
+%% jabber:iq:search operations behave like they have {iqdisc, parallel}
+-export([spawned_dir_iq/4
         ]).
 
 -include("ejabberd.hrl").
 -include_lib("eldap/include/eldap.hrl").
 -include("jlib.hrl").
 
--define(PROCNAME, ejabberd_mod_vcard_ldap).
+-define(SUPMOD, mod_vcard_ldap_sup).
 
--record(state, {serverhost,
+-record(state, {vhost,
 		directory_jid,
-		eldap_id,
 		search,
 		servers,
-		backups,
 		port,
 		tls_options,
 		dn,
@@ -138,23 +138,28 @@
 
 -define(LFIELD(Label, Var),
 	{xmlelement, <<"field">>, [{<<"label">>, translate:translate(Lang, Label)},
-			       {<<"var">>, Var}], []}).
+                                   {<<"var">>, Var}], []}).
 
 -define(TLFIELD(Type, Label, Var),
 	{xmlelement, <<"field">>, [{<<"type">>, Type},
-			       {<<"label">>, translate:translate(Lang, Label)},
-			       {<<"var">>, Var}], []}).
+                                   {<<"label">>, translate:translate(Lang, Label)},
+                                   {<<"var">>, Var}], []}).
 
 -define(FORM(JID, SearchFields),
 	[{xmlelement, <<"instructions">>, [],
-	  [{xmlcdata, translate:translate(Lang, <<"You need an x:data capable client to search">>)}]},
-	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA}, {<<"type">>, <<"form">>}],
+	  [{xmlcdata,
+            translate:translate(
+              Lang, <<"You need an x:data capable client to search">>)}]},
+	 {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_XDATA},
+                                {<<"type">>, <<"form">>}],
 	  [{xmlelement, <<"title">>, [],
-	    [{xmlcdata, <<(translate:translate(Lang, <<"Search users in ">>))/binary,
-	      (jlib:jid_to_binary(JID))/binary>>}]},
+	    [{xmlcdata,
+              <<(translate:translate(Lang, <<"Search users in ">>))/binary,
+                (jlib:jid_to_binary(JID))/binary>>}]},
 	   {xmlelement, <<"instructions">>, [],
-	    [{xmlcdata, translate:translate(Lang, <<"Fill in fields to search "
-					    "for any matching Jabber User">>)}]}
+	    [{xmlcdata,
+              translate:translate(Lang, <<"Fill in fields to search "
+                                          "for any matching Jabber User">>)}]}
 	  ] ++ lists:map(fun({X,Y}) ->
                                  ?TLFIELD(<<"text-single">>, X, Y)
                          end, SearchFields)}]).
@@ -170,18 +175,33 @@
 %%=======================================
 
 start(Host, Opts) ->
-    Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
+    SupName = gen_mod:get_module_proc(Host, mod_vcard_ldap_sup),
     ChildSpec = {
-      Proc, {?MODULE, start_link, [Host, Opts]},
-      transient, 1000, worker, [?MODULE]
+      SupName, {?SUPMOD, start_link, [SupName, Host, Opts]},
+      permanent, 1000, supervisor, [?MODULE]
      },
-    supervisor:start_child(ejabberd_sup, ChildSpec).
+    {ok, _SupPid} = supervisor:start_child(ejabberd_sup, ChildSpec),
+
+    {ok, State} = get_state(Host),
+
+    PoolSupArgs = [vcard,
+                   Host,
+                   State#state.servers,
+                   State#state.port,
+                   State#state.dn,
+                   State#state.password,
+                   State#state.tls_options],
+    PoolChildSpec = {
+      ejabberd_ldap_pool_sup,
+      {ejabberd_ldap_pool_sup, start_link, PoolSupArgs},
+      permanent, 2000, supervisor, [ejabberd_ldap_pool_sup]},
+    {ok, _Pid} = supervisor:start_child(SupName, PoolChildSpec),
+    ok.
 
 stop(Host) ->
-    Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
-    gen_server:call(Proc, stop),
-    supervisor:terminate_child(ejabberd_sup, Proc),
-    supervisor:delete_child(ejabberd_sup, Proc).
+    SupName = gen_mod:get_module_proc(Host, ?SUPMOD),
+    supervisor:terminate_child(ejabberd_sup, SupName),
+    supervisor:delete_child(ejabberd_sup, SupName).
 
 
 %%=======================================
@@ -189,36 +209,31 @@ stop(Host) ->
 %%=======================================
 
 start_link(Host, Opts) ->
-    Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
-    gen_server:start_link({local, Proc}, ?MODULE, [Host, Opts], []).
+    ProcName = gen_mod:get_module_proc(Host, ?MODULE),
+    gen_server:start_link({local, ProcName}, ?MODULE, [Host, Opts], []).
 
 init([Host, Opts]) ->
     State = parse_options(Host, Opts),
     IQDisc = gen_mod:get_opt(iqdisc, Opts, one_queue),
+
     gen_iq_handler:add_iq_handler(ejabberd_local, Host, ?NS_VCARD,
 				  ?MODULE, process_local_iq, IQDisc),
     gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_VCARD,
 				  ?MODULE, process_sm_iq, IQDisc),
     ejabberd_hooks:add(
       disco_local_features, Host, ?MODULE, get_local_features, 50),
-    eldap_pool:start_link(State#state.eldap_id,
-		     State#state.servers,
-		     State#state.backups,
-		     State#state.port,
-		     State#state.dn,
-		     State#state.password,
-		     State#state.tls_options),
     case State#state.search of
 	true ->
 	    ejabberd_router:register_route(State#state.directory_jid);
 	_ ->
 	    ok
     end,
+
     ?DEBUG("~p initial state: ~p", [?MODULE, State]),
     {ok, State}.
 
 terminate(_Reason, State) ->
-    Host = State#state.serverhost,
+    Host = State#state.vhost,
     gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
     gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
     ejabberd_hooks:delete(
@@ -313,22 +328,26 @@ process_sm_iq(_From, #jid{lserver=LServer} = To, #iq{sub_el = SubEl} = IQ) ->
 %% internal
 %%=======================================
 
+get_state(Server) ->
+    Name = gen_mod:get_module_proc(Server, ?MODULE),
+    gen_server:call(Name, get_state).
+
 process_vcard_ldap(To, IQ, Server) ->
-    {ok, State} = eldap_utils:get_state(Server, ?PROCNAME),
+    {ok, State} = get_state(Server),
     #iq{type = Type, sub_el = SubEl} = IQ,
     case Type of
 	set ->
 	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
 	get ->
 	    #jid{luser = LUser} = To,
-	    LServer = State#state.serverhost,
-	    case ejabberd_auth:is_user_exists(LUser, LServer) of
+	    VHost = State#state.vhost,
+	    case ejabberd_auth:is_user_exists(LUser, VHost) of
 		true ->
 		    VCardMap = State#state.vcard_map,
 		    case find_ldap_user(LUser, State) of
 			#eldap_entry{attributes = Attributes} ->
 			    Vcard = ldap_attributes_to_vcard(
-                                      Attributes, VCardMap, {LUser, LServer}),
+                                      Attributes, VCardMap, {LUser, VHost}),
 			    IQ#iq{type = result, sub_el = Vcard};
 			_ ->
 			    IQ#iq{ type = error,
@@ -343,13 +362,14 @@ process_vcard_ldap(To, IQ, Server) ->
 find_ldap_user(User, State) ->
     Base = State#state.base,
     RFC2254_Filter = State#state.user_filter,
-    Eldap_ID = State#state.eldap_id,
+    VHost = State#state.vhost,
     VCardAttrs = State#state.vcard_map_attrs,
     case eldap_filter:parse(RFC2254_Filter, [{<<"%u">>, User}]) of
 	{ok, EldapFilter} ->
-	    case eldap_pool:search(Eldap_ID, [{base, Base},
-					 {filter, EldapFilter},
-					 {attributes, VCardAttrs}]) of
+            Query = [{base, Base},
+                     {filter, EldapFilter},
+                     {attributes, VCardAttrs}],
+	    case ejabberd_ldap_pool:search(vcard, VHost, Query) of
 		#eldap_search_result{entries = [E | _]} ->
 		    E;
 		_ ->
@@ -514,9 +534,9 @@ handle_dir_iq(_State, From, To, Packet, #iq{type = set,
 handle_dir_iq(State, From, To, _Packet, IQ = #iq{type = get,
                                                 xmlns = ?NS_DISCO_INFO,
                                                 lang = Lang}) ->
-    ServerHost = State#state.serverhost,
+    VHost = State#state.vhost,
     Info = ejabberd_hooks:run_fold(
-             disco_info, ServerHost, [], [ServerHost, ?MODULE, "", ""]),
+             disco_info, VHost, [], [VHost, ?MODULE, "", ""]),
     ResIQ =
         IQ#iq{type = result,
               sub_el = [{xmlelement,
@@ -597,15 +617,16 @@ search_result(Lang, JID, State, Data) ->
 search(State, Data) ->
     Base = State#state.base,
     SearchFilter = State#state.search_filter,
-    Eldap_ID = State#state.eldap_id,
+    VHost = State#state.vhost,
     UIDs = State#state.uids,
     Limit = State#state.matches,
     ReportedAttrs = State#state.search_reported_attrs,
-    Filter = eldap:'and'([SearchFilter, eldap_utils:make_filter(Data, UIDs)]),
-    case eldap_pool:search(Eldap_ID, [{base, Base},
-				 {filter, Filter},
-				 {limit, Limit},
-				 {attributes, ReportedAttrs}]) of
+    Filter =
+        eldap:'and'([SearchFilter, ejabberd_ldap_utils:make_filter(Data, UIDs)]),
+    case ejabberd_ldap_pool:search(vcard, VHost, [{base, Base},
+                                                  {filter, Filter},
+                                                  {limit, Limit},
+                                                  {attributes, ReportedAttrs}]) of
 	#eldap_search_result{entries = E} ->
 	    search_items(E, State);
 	_ ->
@@ -613,7 +634,7 @@ search(State, Data) ->
     end.
 
 search_items(Entries, State) ->
-    LServer = State#state.serverhost,
+    VHost = State#state.vhost,
     SearchReported = State#state.search_reported,
     VCardMap = State#state.vcard_map,
     UIDs = State#state.uids,
@@ -622,15 +643,15 @@ search_items(Entries, State) ->
                        Entries),
     lists:flatmap(
       fun(Attrs) ->
-              attr_list_to_search_item(Attrs,UIDs,VCardMap,SearchReported,LServer)
+              attr_list_to_search_item(Attrs,UIDs,VCardMap,SearchReported,VHost)
       end, AttributeLists).
 
-attr_list_to_search_item(Attrs, UIDs, VCardMap, SearchReported, LServer) ->
-    case eldap_utils:find_ldap_attrs(UIDs, Attrs) of
+attr_list_to_search_item(Attrs, UIDs, VCardMap, SearchReported, VHost) ->
+    case ejabberd_ldap_utils:find_ldap_attrs(UIDs, Attrs) of
         {U, UIDAttrFormat} ->
-            case eldap_utils:get_user_part(U, UIDAttrFormat) of
+            case ejabberd_ldap_utils:get_user_part(U, UIDAttrFormat) of
                 {ok, Username} ->
-                    case ejabberd_auth:is_user_exists(Username, LServer) of
+                    case ejabberd_auth:is_user_exists(Username, VHost) of
                         true ->
                             RFields = lists:map(
                                         fun({_, VCardName}) ->
@@ -643,7 +664,7 @@ attr_list_to_search_item(Attrs, UIDs, VCardMap, SearchReported, LServer) ->
                                         end, SearchReported),
                             JIDFieldEl =
                                 ?FIELD(<<"jid">>,
-                                       <<Username/binary, "@", LServer/binary>>),
+                                       <<Username/binary, "@", VHost/binary>>),
                             RFieldEls =
                                 [?FIELD(Name, Value) || {Name, Value} <- RFields],
                             Result = [JIDFieldEl | RFieldEls],
@@ -667,7 +688,7 @@ map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
     %% find the VCardMap definition for the current vCard field
     Res = lists:filter(
 	    fun({Name, _, _}) ->
-		    eldap_utils:case_insensitive_match(Name, VCardField)
+		    ejabberd_ldap_utils:case_insensitive_match(Name, VCardField)
 	    end, VCardMap),
     case Res of
         %% Hack to treat PHOTO binary data specially.
@@ -676,11 +697,13 @@ map_vcard_attr(VCardField, Attributes, VCardMap, UD) ->
         %% replacing a photo is too expensive via eldap_filter -> re
         %% Too expensive here means a 40k jpeg took 3.7 seconds to replace.
 	[{<<"PHOTO">>, _, [LDAPAttrName|_]}] ->
-            JpegBinByteList = eldap_utils:get_ldap_attr(LDAPAttrName, Attributes),
+            JpegBinByteList =
+                ejabberd_ldap_utils:get_ldap_attr(LDAPAttrName, Attributes),
             base64:encode(JpegBinByteList);
 	[{_, VCardFieldTemplate, LDAPAttrNames}] ->
-            LDAPAttrVals = [eldap_utils:get_ldap_attr(LDAPAttrName, Attributes)
-                            || LDAPAttrName <- LDAPAttrNames],
+            LDAPAttrVals =
+                [ejabberd_ldap_utils:get_ldap_attr(LDAPAttrName, Attributes)
+                 || LDAPAttrName <- LDAPAttrNames],
 	    process_pattern(VCardFieldTemplate, UD, LDAPAttrVals);
 	_ -> <<"">>
     end.
@@ -712,17 +735,13 @@ parse_options(Host, Opts) ->
 		infinity  -> 0;
 		N         -> N
 	    end,
-    Eldap_ID = atom_to_list(gen_mod:get_module_proc(Host, ?PROCNAME)),
-    LDAPServers = case gen_mod:get_opt(ldap_servers, Opts, undefined) of
-		      undefined ->
-			  ejabberd_config:get_local_option({ldap_servers, Host});
-		      S -> S
-		  end,
-    LDAPBackups = case gen_mod:get_opt(ldap_backups, Opts, undefined) of
-		      undefined ->
-			  ejabberd_config:get_local_option({ldap_servers, Host});
-		      Backups -> Backups
-		  end,
+    LDAPServersLists =
+        case gen_mod:get_opt(ldap_servers, Opts, undefined) of
+            undefined ->
+                ejabberd_config:get_local_option({ldap_servers, Host});
+            S -> S
+        end,
+    LDAPServers = lists:map(fun erlang:list_to_binary/1, LDAPServersLists),
     LDAPEncrypt = case gen_mod:get_opt(ldap_encrypt, Opts, undefined) of
 		      undefined ->
 			  ejabberd_config:get_local_option({ldap_encrypt, Host});
@@ -750,11 +769,11 @@ parse_options(Host, Opts) ->
 			undefined -> [{<<"uid">>, <<"%u">>}];
 			UI ->
                             UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
-                            eldap_utils:uids_domain_subst(Host, UIBin)
+                            ejabberd_ldap_utils:uids_domain_subst(Host, UIBin)
 			end;
 		UI ->
                        UIBin = lists:map(fun ldap_uids_to_bin/1, UI),
-                       eldap_utils:uids_domain_subst(Host, UIBin)
+                       ejabberd_ldap_utils:uids_domain_subst(Host, UIBin)
 		end,
     RootDN = case gen_mod:get_opt(ldap_rootdn, Opts, undefined) of
 		 undefined ->
@@ -773,7 +792,7 @@ parse_options(Host, Opts) ->
 		       end;
 		   Pass -> Pass
 	       end,
-    SubFilter = eldap_utils:generate_subfilter(UIDs),
+    SubFilter = ejabberd_ldap_utils:generate_subfilter(UIDs),
     RFC4515Filt = gen_mod:get_opt(
                       ldap_filter, Opts, ejabberd_config:get_local_option(
                                            {ldap_filter, Host})),
@@ -805,12 +824,10 @@ parse_options(Host, Opts) ->
 				  _ -> []
 			      end
 		      end, SearchReportedBin) ++ UIDAttrs),
-    #state{serverhost = Host,
+    #state{vhost = Host,
 	   directory_jid = DirectoryJID,
-	   eldap_id = Eldap_ID,
 	   search = Search,
 	   servers = LDAPServers,
-	   backups = LDAPBackups,
 	   port = LDAPPort,
 	   tls_options = [{encrypt, LDAPEncrypt},
 			  {tls_verify, LDAPTLSVerify}],

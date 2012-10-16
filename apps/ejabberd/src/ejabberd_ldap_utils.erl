@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% File    : eldap_utils.erl
+%%% File    : ejabberd_auth_ldap_utils.erl
 %%% Author  : Mickael Remond <mremond@process-one.net>
 %%% Purpose : ejabberd LDAP helper functions
 %%% Created : 12 Oct 2006 by Mickael Remond <mremond@process-one.net>
@@ -24,7 +24,7 @@
 %%%
 %%%----------------------------------------------------------------------
 
--module(eldap_utils).
+-module(ejabberd_ldap_utils).
 -author('mremond@process-one.net').
 
 -export([generate_subfilter/1,
@@ -33,7 +33,6 @@
 	 usort_attrs/1,
 	 get_user_part/2,
 	 make_filter/2,
-	 get_state/2,
 	 case_insensitive_match/2,
 	 uids_domain_subst/2]).
 
@@ -126,10 +125,6 @@ case_insensitive_match(X, Y) ->
 	X1 == Y1 -> true;
 	true -> false
     end.
-
-get_state(Server, Module) ->
-    Proc = gen_mod:get_module_proc(Server, Module),
-    gen_server:call(Proc, get_state).
 
 %% From the list of uids attribute:
 %% we look from alias domain (%d) and make the substitution
