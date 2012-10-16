@@ -32,7 +32,6 @@
 %% External exports
 -export([start/2,
 	 start_link/2,
-	 match_domain/2,
 	 socket_type/0]).
 
 %% gen_fsm callbacks
@@ -49,8 +48,6 @@
 -include("ejabberd.hrl").
 -include("jlib.hrl").
 -include_lib("public_key/include/public_key.hrl").
--define(PKIXEXPLICIT, 'OTP-PUB-KEY').
--define(PKIXIMPLICIT, 'OTP-PUB-KEY').
 -include("XmppAddr.hrl").
 
 -define(DICT, dict).
@@ -140,7 +137,8 @@ init([{SockMod, Socket}, Opts]) ->
 		 {value, {_, S}} -> S;
 		 _ -> none
 	     end,
-    {StartTLS, TLSRequired, TLSCertverify} = case ejabberd_config:get_local_option(s2s_use_starttls) of
+    {StartTLS, TLSRequired, TLSCertverify} =
+        case ejabberd_config:get_local_option(s2s_use_starttls) of
              UseTls when (UseTls==undefined) or (UseTls==false) ->
                  {false, false, false};
              UseTls when (UseTls==true) or (UseTls==optional) ->
@@ -150,12 +148,18 @@ init([{SockMod, Socket}, Opts]) ->
              required_trusted ->
                  {true, true, true}
          end,
-    TLSOpts = case ejabberd_config:get_local_option(s2s_certfile) of
-		  undefined ->
-		      [];
-		  CertFile ->
-		      [{certfile, CertFile}]
+    TLSCertfileOpt = case ejabberd_config:get_local_option(s2s_certfile) of
+		  undefined -> [];
+		  CertFile -> [{certfile, CertFile}]
 	      end,
+    TLSCACertfile = ejabberd_config:get_local_option(cacertfile),
+    {TLSVerifyOpt, TLSCACertfileOpt} = case TLSCertverify of
+                       false -> {[{verify, verify_none}],[]};
+                       true ->
+                           {[{verify, verify_peer}, {fail_if_no_peer_cert, true}],
+                            [{cacertfile, TLSCACertfile}]}
+                   end,
+    TLSOpts = TLSCertfileOpt ++ TLSVerifyOpt ++ TLSCACertfileOpt,
     Timer = erlang:start_timer(?S2STIMEOUT, self(), []),
     {ok, wait_for_stream,
      #state{socket = Socket,
@@ -165,7 +169,7 @@ init([{SockMod, Socket}, Opts]) ->
 	    tls = StartTLS,
 	    tls_enabled = false,
 	    tls_required = TLSRequired,
-	    tls_certverify = TLSCertverify,
+            tls_certverify = TLSCertverify,
 	    tls_options = TLSOpts,
 	    timer = Timer}}.
 
@@ -186,25 +190,13 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 	    send_text(StateData, ?STREAM_HEADER(<<" version='1.0'">>)),
 	    SASL =
 		if
-		    StateData#state.tls_enabled ->
-			case (StateData#state.sockmod):get_peer_certificate(
-			       StateData#state.socket) of
-			    {ok, Cert} ->
-				case (StateData#state.sockmod):get_verify_result(StateData#state.socket) of
-				    0 ->
-					[{xmlelement, <<"mechanisms">>,
-					  [{<<"xmlns">>, ?NS_SASL}],
-					  [{xmlelement, <<"mechanism">>, [],
-					    [{xmlcdata, <<"EXTERNAL">>}]}]}];
-				    CertVerifyRes ->
-					case StateData#state.tls_certverify of
-					    true -> {error_cert_verif, CertVerifyRes, Cert};
-					    false -> []
-					end
-				end;
-			    error ->
-				[]
-			end;
+                    %% Only offer SASL EXT. if verifying peer cert.
+		    StateData#state.tls_enabled
+                    and StateData#state.tls_certverify ->
+                        [{xmlelement, <<"mechanisms">>,
+                          [{<<"xmlns">>, ?NS_SASL}],
+                          [{xmlelement, <<"mechanism">>, [],
+                            [{xmlcdata, <<"EXTERNAL">>}]}]}];
 		    true ->
 			[]
 		end,
@@ -218,26 +210,14 @@ wait_for_stream({xmlstreamstart, _Name, Attrs}, StateData) ->
 						[{xmlelement, <<"required">>, [], []}]
 					   }]
 		       end,
-	    case SASL of
-		{error_cert_verif, CertVerifyResult, Certificate} ->
-		    CertError = tls:get_cert_verify_string(CertVerifyResult, Certificate),
-		    RemoteServer = xml:get_attr_s(<<"from">>, Attrs),
-		    ?INFO_MSG("Closing s2s connection: ~s <--> ~s (~s)", [StateData#state.server, RemoteServer, CertError]),
-		    send_text(StateData, xml:element_to_string(?SERRT_POLICY_VIOLATION(<<"en">>, CertError))),
-		    {atomic, Pid} = ejabberd_s2s:find_connection(jlib:make_jid(<<"">>, Server, <<"">>), jlib:make_jid(<<"">>, RemoteServer, <<"">>)),
-		    ejabberd_s2s_out:stop_connection(Pid),
-
-		    {stop, normal, StateData};
-		_ ->
-		    send_element(StateData,
-				 {xmlelement, <<"stream:features">>, [],
-				  SASL ++ StartTLS ++
-				  ejabberd_hooks:run_fold(
-				    s2s_stream_features,
-				    Server,
-				    [], [Server])}),
-		    {next_state, wait_for_feature_request, StateData#state{server = Server}}
-	    end;
+            send_element(StateData,
+                         {xmlelement, <<"stream:features">>, [],
+                          SASL ++ StartTLS ++
+                              ejabberd_hooks:run_fold(
+                                s2s_stream_features,
+                                Server,
+                                [], [Server])}),
+            {next_state, wait_for_feature_request, StateData#state{server = Server}};
 	{<<"jabber:server">>, _, Server, true} when
 	      StateData#state.authenticated ->
 	    send_text(StateData, ?STREAM_HEADER(<<" version='1.0'">>)),
@@ -277,7 +257,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 	{?NS_TLS, <<"starttls">>} when TLS == true,
 				   TLSEnabled == false,
 				   SockMod == gen_tcp ->
-	    ?DEBUG(<<"starttls">>, []),
+	    ?DEBUG("starttls", []),
 	    Socket = StateData#state.socket,
 	    TLSOpts = case ejabberd_config:get_local_option(
 			     {domain_certfile,
@@ -291,7 +271,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 				 StateData#state.tls_options)]
 		      end,
 	    TLSSocket = (StateData#state.sockmod):starttls(
-			  Socket, TLSOpts,
+			  receiver, Socket, TLSOpts,
 			  xml:element_to_binary(
 			    {xmlelement, <<"proceed">>, [{<<"xmlns">>, ?NS_TLS}], []})),
 	    {next_state, wait_for_stream,
@@ -310,29 +290,11 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 			case (StateData#state.sockmod):get_peer_certificate(
 			       StateData#state.socket) of
 			    {ok, Cert} ->
-				case (StateData#state.sockmod):get_verify_result(
-				       StateData#state.socket) of
-				    0 ->
-					case AuthDomain of
-					    error ->
-						false;
-					    _ ->
-						case idna:domain_utf8_to_ascii(AuthDomain) of
-						    false ->
-							false;
-						    PCAuthDomain ->
-							lists:any(
-							  fun(D) ->
-								  match_domain(
-								    PCAuthDomain, D)
-							  end, get_cert_domains(Cert))
-						end
-					end;
-				    _ ->
-					false
-				end;
-			    error ->
-				false
+                                ejabberd_tls:domain_matches_cert(AuthDomain, Cert);
+                            {error, no_peercert} ->
+                                ?WARNING_MSG("no peer cert from ~p in SASL EXT",
+                                             [AuthDomain]),
+                                false
 			end,
 		    if
 			AuthRes ->
@@ -349,6 +311,7 @@ wait_for_feature_request({xmlstreamelement, El}, StateData) ->
 					     auth_domain = AuthDomain
 					    }};
 			true ->
+                            ?INFO_MSG("SASL EXTERNAL failed for ~p", [AuthDomain]),
 			    send_element(StateData,
 					 {xmlelement, <<"failure">>,
 					  [{<<"xmlns">>, ?NS_SASL}], []}),
@@ -684,121 +647,3 @@ is_key_packet({xmlelement, Name, Attrs, Els}) when Name == <<"db:verify">> ->
 is_key_packet(_) ->
     false.
 
-
-get_cert_domains(Cert) ->
-    {rdnSequence, Subject} =
-	(Cert#'Certificate'.tbsCertificate)#'TBSCertificate'.subject,
-    Extensions =
-	(Cert#'Certificate'.tbsCertificate)#'TBSCertificate'.extensions,
-    lists:flatmap(
-      fun(#'AttributeTypeAndValue'{type = ?'id-at-commonName',
-				   value = Val}) ->
-	      case ?PKIXEXPLICIT:decode('X520CommonName', Val) of
-		  {ok, {_, D1}} ->
-		      D = if
-			      is_list(D1) -> list_to_binary(D1);
-			      is_binary(D1) -> D1;
-			      true -> error
-			  end,
-		      if
-			  D /= error ->
-			      case jlib:binary_to_jid(D) of
-				  #jid{luser = <<"">>,
-				       lserver = LD,
-				       lresource = <<"">>} ->
-				      [LD];
-				  _ ->
-				      []
-			      end;
-			  true ->
-			      []
-		      end;
-		  _ ->
-		      []
-	      end;
-	 (_) ->
-	      []
-      end, lists:flatten(Subject)) ++
-	lists:flatmap(
-	  fun(#'Extension'{extnID = ?'id-ce-subjectAltName',
-			   extnValue = Val}) ->
-		  BVal = if
-			     is_list(Val) -> list_to_binary(Val);
-			     is_binary(Val) -> Val;
-			     true -> Val
-			 end,
-		  case ?PKIXIMPLICIT:decode('SubjectAltName', BVal) of
-		      {ok, SANs} ->
-			  lists:flatmap(
-			    fun({otherName,
-				 #'AnotherName'{'type-id' = ?'id-on-xmppAddr',
-						value = XmppAddr
-					       }}) ->
-				    case 'XmppAddr':decode(
-					   'XmppAddr', XmppAddr) of
-					{ok, D} when is_binary(D) ->
-					    case jlib:binary_to_jid(D) of
-						#jid{luser = <<"">>,
-						     lserver = LD,
-						     lresource = <<"">>} ->
-						    case idna:domain_utf8_to_ascii(LD) of
-							false ->
-							    [];
-							PCLD ->
-							    [PCLD]
-						    end;
-						_ ->
-						    []
-					    end;
-					_ ->
-					    []
-				    end;
-			       ({dNSName, D}) when is_list(D) ->
-				    case jlib:binary_to_jid(list_to_binary(D)) of
-					#jid{luser = <<"">>,
-					     lserver = LD,
-					     lresource = <<"">>} ->
-					    [LD];
-					_ ->
-					    []
-				    end;
-			       (_) ->
-				    []
-			    end, SANs);
-		      _ ->
-			  []
-		  end;
-	     (_) ->
-		  []
-	  end, Extensions).
-
-match_domain(Domain, Domain) ->
-    true;
-match_domain(Domain, Pattern) ->
-    DLabels = binary:split(Domain, <<".">>, [global]),
-    PLabels = binary:split(Pattern, <<".">>, [global]),
-    match_labels(DLabels, PLabels).
-
-match_labels([], []) ->
-    true;
-match_labels([], [_ | _]) ->
-    false;
-match_labels([_ | _], []) ->
-    false;
-match_labels([DL | DLabels], [PL | PLabels]) ->
-    PLlist = binary_to_list(PL),
-    case lists:all(fun(C) -> (($a =< C) andalso (C =< $z))
-				 orelse (($0 =< C) andalso (C =< $9))
-				 orelse (C == $-) orelse (C == $*)
-		   end, PLlist) of
-	true ->
-	    Regexp = xmerl_regexp:sh_to_awk(PLlist),
-	    case re:run(binary_to_list(DL), Regexp, [{capture, none}]) of
-		match ->
-		    match_labels(DLabels, PLabels);
-		nomatch ->
-		    false
-	    end;
-	false ->
-	    false
-    end.

@@ -64,3 +64,5 @@
                   us :: {binary(), binary()},
                   priority :: integer(),
                   info :: list()}).
+
+-record(socket_state, {sockmod, socket, receiver}).

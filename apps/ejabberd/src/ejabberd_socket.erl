@@ -31,8 +31,8 @@
 -export([start/4,
 	 connect/3,
 	 connect/4,
-	 starttls/2,
 	 starttls/3,
+	 starttls/4,
 	 compress/1,
 	 compress/2,
 	 reset_stream/1,
@@ -42,13 +42,10 @@
 	 monitor/1,
 	 get_sockmod/1,
 	 get_peer_certificate/1,
-	 get_verify_result/1,
 	 close/1,
 	 sockname/1, peername/1]).
 
 -include("ejabberd.hrl").
-
--record(socket_state, {sockmod, socket, receiver}).
 
 %%====================================================================
 %% API
@@ -77,16 +74,19 @@ start(Module, SockMod, Socket, Opts) ->
 	    SocketData = #socket_state{sockmod = SockMod,
 				       socket = Socket,
 				       receiver = RecRef},
-	    case Module:start({?MODULE, SocketData}, Opts) of
-		{ok, Pid} ->
-		    case SockMod:controlling_process(Socket, Receiver) of
-			ok ->
-			    ok;
-			{error, _Reason} ->
-			    SockMod:close(Socket)
-		    end,
+            %% Receiver must be controlling proc before trying to start mod
+            ControlToReceiver = SockMod:controlling_process(Socket, Receiver),
+            %% SocketData might be out of date after calling Module:start:
+            %% The support for the old tls-from-start support means ejabberd_c2s
+            %% starts ssl on the tcp connection, meaning sockmod and socket are not
+            %% do be used further.
+	    case {ControlToReceiver, Module:start({?MODULE, SocketData}, Opts)} of
+		{ok, {ok, Pid}} ->
 		    ReceiverMod:become_controller(Receiver, Pid);
-		{error, _Reason} ->
+		{ControlToReceiver, ModuleStart} ->
+                    ?DEBUG("Making receiver the controlling process: ~p~n"
+                           "Starting ~p: ~p",
+                           [ControlToReceiver, ModuleStart]),
 		    SockMod:close(Socket),
 		    case ReceiverMod of
 			ejabberd_receiver ->
@@ -134,16 +134,20 @@ connect(Addr, Port, Opts, Timeout) ->
 	    Error
     end.
 
-starttls(SocketData, TLSOpts) ->
-    {ok, TLSSocket} = tls:tcp_to_tls(SocketData#socket_state.socket, TLSOpts),
-    ejabberd_receiver:starttls(SocketData#socket_state.receiver, TLSSocket),
-    SocketData#socket_state{socket = TLSSocket, sockmod = tls}.
+starttls(Side, SocketData, TLSOpts) ->
+    {ok, TLSSock} = ejabberd_receiver:starttls(Side,
+                                               SocketData#socket_state.receiver,
+                                               SocketData#socket_state.socket,
+                                               TLSOpts),
+    SocketData#socket_state{socket = TLSSock, sockmod = ssl}.
 
-starttls(SocketData, TLSOpts, Data) ->
-    {ok, TLSSocket} = tls:tcp_to_tls(SocketData#socket_state.socket, TLSOpts),
-    ejabberd_receiver:starttls(SocketData#socket_state.receiver, TLSSocket),
+starttls(Side, SocketData, TLSOpts, Data) ->
     send(SocketData, Data),
-    SocketData#socket_state{socket = TLSSocket, sockmod = tls}.
+    {ok, TLSSock} = ejabberd_receiver:starttls(Side,
+                                               SocketData#socket_state.receiver,
+                                               SocketData#socket_state.socket,
+                                               TLSOpts),
+    SocketData#socket_state{socket = TLSSock, sockmod = ssl}.
 
 compress(SocketData) ->
     {ok, ZlibSocket} = ejabberd_zlib:enable_zlib(
@@ -166,7 +170,7 @@ reset_stream(SocketData) when is_atom(SocketData#socket_state.receiver) ->
     (SocketData#socket_state.receiver):reset_stream(
       SocketData#socket_state.socket).
 
-%% sockmod=gen_tcp|tls|ejabberd_zlib
+%% sockmod=gen_tcp|ssl|ejabberd_zlib
 send(SocketData, Data) ->
     case catch (SocketData#socket_state.sockmod):send(
 	     SocketData#socket_state.socket, Data) of
@@ -204,10 +208,7 @@ get_sockmod(SocketData) ->
     SocketData#socket_state.sockmod.
 
 get_peer_certificate(SocketData) ->
-    tls:get_peer_certificate(SocketData#socket_state.socket).
-
-get_verify_result(SocketData) ->
-    tls:get_verify_result(SocketData#socket_state.socket).
+    ssl:peercert(SocketData#socket_state.socket).
 
 close(SocketData) ->
     ejabberd_receiver:close(SocketData#socket_state.receiver).

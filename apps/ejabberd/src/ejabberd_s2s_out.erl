@@ -65,8 +65,9 @@
 		use_v10,
 		tls = false,
 		tls_required = false,
+		tls_verify = false,
 		tls_enabled = false,
-		tls_options = [connect],
+		tls_options = [],
 		authenticated = false,
 		db_enabled = true,
 		try_auth = true,
@@ -75,8 +76,6 @@
 		new = false, verify = false,
 		bridge,
 		timer}).
-
-%%-define(DBGFSM, true).
 
 -ifdef(DBGFSM).
 -define(FSMOPTS, [{debug, [trace]}]).
@@ -155,21 +154,30 @@ stop_connection(Pid) ->
 init([From, Server, Type]) ->
     process_flag(trap_exit, true),
     ?DEBUG("started: ~p", [{From, Server, Type}]),
-    {TLS, TLSRequired} = case ejabberd_config:get_local_option(s2s_use_starttls) of
+    {TLS, TLSRequired, TLSCertVerify} =
+        case ejabberd_config:get_local_option(s2s_use_starttls) of
 	      UseTls when (UseTls==undefined) or (UseTls==false) ->
-		  {false, false};
+		  {false, false, false};
 	      UseTls when (UseTls==true) or (UseTls==optional) ->
-		  {true, false};
+		  {true, false, false};
 	      UseTls when (UseTls==required) or (UseTls==required_trusted) ->
-		  {true, true}
+		  {true, true, true}
 	  end,
     UseV10 = TLS,
-    TLSOpts = case ejabberd_config:get_local_option(s2s_certfile) of
-		  undefined ->
-		      [connect];
-		  CertFile ->
-		      [{certfile, CertFile}, connect]
-	      end,
+    TLSCertfileOpt = case ejabberd_config:get_local_option(s2s_certfile) of
+                         undefined ->
+                             [];
+                         CertFile ->
+                             [{certfile, CertFile}]
+                     end,
+    TLSCACertfile = ejabberd_config:get_local_option(cacertfile),
+    {TLSVerifyOpt, TLSCACertfileOpt} = case TLSCertVerify of
+                       false -> {[{verify, verify_none}],[]};
+                       true ->
+                           {[{verify, verify_peer}, {fail_if_no_peer_cert, true}],
+                            [{cacertfile, TLSCACertfile}]}
+                   end,
+    TLSOpts = TLSCertfileOpt ++ TLSVerifyOpt ++ TLSCACertfileOpt,
     {New, Verify} = case Type of
 			{new, Key} ->
 			    {Key, false};
@@ -181,6 +189,7 @@ init([From, Server, Type]) ->
     {ok, open_socket, #state{use_v10 = UseV10,
 			     tls = TLS,
 			     tls_required = TLSRequired,
+			     tls_verify = TLSCertVerify,
 			     tls_options = TLSOpts,
 			     queue = queue:new(),
 			     myname = From,
@@ -585,8 +594,9 @@ wait_for_auth_result({xmlstreamelement, El}, StateData) ->
 	{xmlelement, <<"failure">>, Attrs, _Els} ->
 	    case xml:get_attr_s(<<"xmlns">>, Attrs) of
 		?NS_SASL ->
-		    ?DEBUG("restarted: ~p", [{StateData#state.myname,
-					      StateData#state.server}]),
+		    ?DEBUG("SASL EXTERNAL failed. restarted: ~p",
+                           [{StateData#state.myname,
+                             StateData#state.server}]),
 		    ejabberd_socket:close(StateData#state.socket),
 		    {next_state, reopen_socket,
 		     StateData#state{socket = undefined}, ?FSMTIMEOUT};
@@ -645,17 +655,40 @@ wait_for_starttls_proceed({xmlstreamelement, El}, StateData) ->
 					 certfile, 1,
 					 StateData#state.tls_options)]
 			      end,
-		    TLSSocket = ejabberd_socket:starttls(Socket, TLSOpts),
-		    NewStateData = StateData#state{socket = TLSSocket,
-						   streamid = new_id(),
-						   tls_enabled = true,
-						   tls_options = TLSOpts
-						  },
-		    send_text(NewStateData,
-			      io_lib:format(?STREAM_HEADER,
-					    [StateData#state.myname, StateData#state.server,
-					     <<" version='1.0'">>])),
-		    {next_state, wait_for_stream, NewStateData, ?FSMTIMEOUT};
+		    TLSSocket = ejabberd_socket:starttls(initiator,
+                                                         Socket, TLSOpts),
+                    Continue =
+                        case StateData#state.tls_verify of
+                            true ->
+                                {ok, PeerCert} =
+                                    ejabberd_socket:get_peer_certificate(
+                                      TLSSocket),
+                                ejabberd_tls:domain_matches_cert(
+                                  StateData#state.server, PeerCert);
+                            false ->
+                                true
+                        end,
+                    case Continue of
+                        true ->
+		            NewStateData = StateData#state{socket = TLSSocket,
+						           streamid = new_id(),
+						           tls_enabled = true,
+						           tls_options = TLSOpts
+						           },
+		            send_text(NewStateData,
+			              io_lib:format(?STREAM_HEADER,
+					            [StateData#state.myname,
+                                                     StateData#state.server,
+                                                     <<" version='1.0'">>])),
+		            {next_state, wait_for_stream, NewStateData,
+                             ?FSMTIMEOUT};
+                        false ->
+                            ?INFO_MSG("StartTLS to ~p failed because their "
+                                      "certificate didn't match their domain.",
+                                      [StateData#state.server]),
+                            ejabberd_socket:close(TLSSocket),
+                            {stop, normal, StateData}
+                    end;
 		_ ->
 		    send_text(StateData,
 			      <<(xml:element_to_string(?SERR_BAD_FORMAT))/binary,

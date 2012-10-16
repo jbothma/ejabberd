@@ -44,8 +44,7 @@ start(normal, _Args) ->
     db_init(),
     sha:start(),
     xml:start(),
-
-    load_drivers([tls_drv, expat_erl]),
+    load_drivers([expat_erl]),
     translate:start(),
     acl:start(),
     ejabberd_ctl:init(),

@@ -36,6 +36,9 @@ rel: rebar deps
 
 devrel: $(DEVNODES)
 
+devcerts:
+	cd rel/ssl && make install
+
 testrel: $(DEVNODES) $(TESTNODES)
 
 $(DEVNODES) $(TESTNODES): rebar deps compile deps_dev
@@ -48,9 +51,8 @@ else
 	cp -R `which erl`/../../lib/tools-* dev/ejabberd_$@/lib/
 endif
 
-deps_dev:
+deps_dev: devcerts
 	mkdir -p dev
-	cp rel/files/test_cert.pem /tmp/server.pem
 	cp rel/files/sample_external_auth.py /tmp
 
 devclean:
@@ -92,4 +94,3 @@ test_deps: rebar
 rebar:
 	wget -q http://cloud.github.com/downloads/basho/rebar/rebar
 	chmod u+x rebar
-
