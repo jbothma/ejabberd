@@ -238,7 +238,8 @@ try_set_password(User, Server, Password, IQ, SubEl, Lang) ->
 		    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
 		{error, invalid_jid} ->
 		    IQ#iq{type = error, sub_el = [SubEl, ?ERR_ITEM_NOT_FOUND]};
-		_ ->
+		Else ->
+                    ?ERROR_MSG("~p~n", [Else]),
 		    IQ#iq{type = error, sub_el = [SubEl, ?ERR_INTERNAL_SERVER_ERROR]}
 	    end;
 	false ->

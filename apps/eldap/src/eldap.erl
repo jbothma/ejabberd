@@ -238,7 +238,7 @@ modify_dn(Handle, Entry, NewRDN, DelOldRDN, NewSup)
       {modify_dn, Entry, NewRDN, bool_p(DelOldRDN), optional(NewSup)},
       ?CALL_TIMEOUT).
 
-modify_passwd(Handle, DN, Passwd) when is_list(DN), is_list(Passwd) ->
+modify_passwd(Handle, DN, Passwd) when is_binary(DN), is_binary(Passwd) ->
     Handle1 = get_handle(Handle),
     gen_fsm:sync_send_event(
       Handle1, {modify_passwd, DN, Passwd}, ?CALL_TIMEOUT).
@@ -290,9 +290,8 @@ optional(Value) -> Value.
 search(Handle, A) when is_record(A, eldap_search) ->
     call_search(Handle, A);
 search(Handle, L) when is_list(L) ->
-    case catch parse_search_args(L) of
-	{error, Emsg}                  -> {error, Emsg};
-	{'EXIT', Emsg}                 -> {error, Emsg};
+    case parse_search_args(L) of
+	{error, Emsg} -> {error, Emsg};
 	A when is_record(A, eldap_search) -> call_search(Handle, A)
     end.
 
@@ -496,7 +495,7 @@ active(Event, From, S) ->
 %%          {stop, Reason, NewStateData}                         
 %%----------------------------------------------------------------------
 handle_event(close, _StateName, S) ->
-    catch (S#eldap.sockmod):close(S#eldap.fd),
+    (S#eldap.sockmod):close(S#eldap.fd),
     {stop, normal, S};
 
 handle_event(_Event, StateName, S) ->
@@ -566,7 +565,8 @@ handle_info({Tag, _Socket, Data}, StateName, S)
 	       true ->
 		    {next_state, StateName, NewS}
 	    end;
-	_ ->
+	Else ->
+            ?WARNING_MSG("Not handling received packet: ~p~n", [Else]),
 	    {next_state, StateName, S}
     end;
 
@@ -706,7 +706,7 @@ gen_req({modify_passwd, DN, Passwd}) ->
 				  newPasswd = Passwd}),
     {extendedReq,
      #'ExtendedRequest'{requestName = ?passwdModifyOID,
-			requestValue = list_to_binary(ReqVal)}};
+			requestValue = ReqVal}};
 
 gen_req({bind, RootDN, Passwd}) ->
     {bindRequest,

@@ -177,9 +177,8 @@ dirty_get_registered_users() ->
       end, Servers).
 
 get_vh_registered_users(Server) ->
-    case catch get_vh_registered_users_ldap(Server) of
-	{'EXIT', _} -> [];
-	Result -> Result
+    case get_vh_registered_users_ldap(Server) of
+	Result when is_list(Result) -> Result
 	end.
 
 get_vh_registered_users_number(Server) ->
@@ -194,7 +193,8 @@ get_password_s(_User, _Server) ->
 %% @spec (User, Server) -> true | false | {error, Error}
 is_user_exists(User, Server) ->
     case catch is_user_exists_ldap(User, Server) of
-	{'EXIT', Error} ->
+	{'EXIT', Error} = Exit ->
+            ?ERROR_MSG("~p~n", [Exit]),
 	    {error, Error};
 	Result ->
 	    Result
