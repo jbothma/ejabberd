@@ -5,17 +5,16 @@
 %%% Created : 12 Dec 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%% Each vhost has a tree of ejabberd_auth_ldap_sup_VHost
-%%%                               /       \
-%%%           ejabberd_ldap_pool_sup     ejabberd_auth_ldap_VHost
-%%%            /                  \
-%%%         eldap                eldap
+%%%                          /       \                   \
+%%%   ejabberd_auth_ldap_VHost   ejabberd_ldap_pool_sup   ejabberd_ldap_pool_sup
+%%%                                              \                  \
+%%%                                            eldap                eldap
 %%%
 %%% where ejabberd_auth_ldap caches the filter and connection configuration,
-%%% and there's an eldap for LDAP bind operations and another for all other
-%%% LDAP operations for each LDAP server.
+%%% and there's an ldap connection pool for LDAP bind operations and another for
+%%% all other LDAP operations for each LDAP server.
 %%% The bind and general eldap processes are in a bind or general pg2 group and
-%%% a random process is chosen to complete each LDAP operation. Each vhost has
-%%% its own groups. A process from the local node is preferred.
+%%% a random process is chosen to complete each LDAP operation.
 %%%
 %%% ejabberd, Copyright (C) 2002-2011   ProcessOne
 %%%
