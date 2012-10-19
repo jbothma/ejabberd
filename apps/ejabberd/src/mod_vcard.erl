@@ -60,7 +60,7 @@
 
 -define(PROCNAME, ejabberd_mod_vcard).
 
-start(Host, Opts) ->
+start(VHost, Opts) ->
     mnesia:create_table(vcard, [{disc_only_copies, [node()]},
 				{attributes, record_info(fields, vcard)}]),
     mnesia:create_table(vcard_search,
@@ -80,59 +80,60 @@ start(Host, Opts) ->
     mnesia:add_table_index(vcard_search, lorgname),
     mnesia:add_table_index(vcard_search, lorgunit),
 
-    ejabberd_hooks:add(remove_user, Host,
+    ejabberd_hooks:add(remove_user, VHost,
 		       ?MODULE, remove_user, 50),
     IQDisc = gen_mod:get_opt(iqdisc, Opts, one_queue),
-    gen_iq_handler:add_iq_handler(ejabberd_local, Host, ?NS_VCARD,
+    gen_iq_handler:add_iq_handler(ejabberd_local, VHost, ?NS_VCARD,
 				  ?MODULE, process_local_iq, IQDisc),
-    gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_VCARD,
+    gen_iq_handler:add_iq_handler(ejabberd_sm, VHost, ?NS_VCARD,
 				  ?MODULE, process_sm_iq, IQDisc),
-    ejabberd_hooks:add(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
-    MyHost = gen_mod:get_opt_host(Host, Opts, "vjud.@HOST@"),
+    ejabberd_hooks:add(disco_sm_features, VHost, ?MODULE, get_sm_features, 50),
+    DirectoryHost = gen_mod:get_opt_host(VHost, Opts, "vjud.@HOST@"),
     Search = gen_mod:get_opt(search, Opts, true),
-    register(gen_mod:get_module_proc(Host, ?PROCNAME),
-	     spawn(?MODULE, init, [MyHost, Host, Search])).
+    register(gen_mod:get_module_proc(VHost, ?PROCNAME),
+	     spawn(?MODULE, init, [DirectoryHost, VHost, Search])).
 
 
-init(Host, ServerHost, Search) ->
+init(DirectoryHost, VHost, Search) ->
     case Search of
 	false ->
-	    loop(Host, ServerHost);
+	    loop(DirectoryHost, VHost);
 	_ ->
-	    ejabberd_router:register_route(Host),
-	    loop(Host, ServerHost)
+	    ejabberd_router:register_route(DirectoryHost),
+	    loop(DirectoryHost, VHost)
     end.
 
-loop(Host, ServerHost) ->
+loop(DirectoryHost, VHost) ->
     receive
 	{route, From, To, Packet} ->
-	    case catch do_route(ServerHost, From, To, Packet) of
+            IQ = jlib:iq_query_info(Packet),
+	    case catch do_route(VHost, From, To, Packet, IQ) of
 		{'EXIT', Reason} ->
 		    ?ERROR_MSG("~p", [Reason]);
 		_ ->
 		    ok
 	    end,
-	    loop(Host, ServerHost);
+	    loop(DirectoryHost, VHost);
 	stop ->
-	    ejabberd_router:unregister_route(Host),
+	    ejabberd_router:unregister_route(DirectoryHost),
 	    ok;
 	_ ->
-	    loop(Host, ServerHost)
+	    loop(DirectoryHost, VHost)
     end.
 
-stop(Host) ->
-    ejabberd_hooks:delete(remove_user, Host,
+stop(VHost) ->
+    ejabberd_hooks:delete(remove_user, VHost,
 			  ?MODULE, remove_user, 50),
-    gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_VCARD),
-    gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_VCARD),
-    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE, get_sm_features, 50),
-    Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
+    gen_iq_handler:remove_iq_handler(ejabberd_local, VHost, ?NS_VCARD),
+    gen_iq_handler:remove_iq_handler(ejabberd_sm, VHost, ?NS_VCARD),
+    ejabberd_hooks:delete(disco_sm_features, VHost, ?MODULE, get_sm_features, 50),
+    Proc = gen_mod:get_module_proc(VHost, ?PROCNAME),
     Proc ! stop,
     {wait, Proc}.
 
 get_sm_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
     Acc;
- 
+
 get_sm_features(Acc, _From, _To, Node, _Lang) ->
     case Node of
 	[] ->
@@ -198,7 +199,7 @@ process_sm_iq(From, To, #iq{type = Type, sub_el = SubEl} = IQ) ->
 	    IQ#iq{type = result, sub_el = Els}
     end.
 
-set_vcard(User, LServer, VCARD) ->
+set_vcard(User, VHost, VCARD) ->
     FN       = xml:get_path_s(VCARD, [{elem, "FN"},                     cdata]),
     Family   = xml:get_path_s(VCARD, [{elem, "N"}, {elem, "FAMILY"},    cdata]),
     Given    = xml:get_path_s(VCARD, [{elem, "N"}, {elem, "GIVEN"},     cdata]),
@@ -231,7 +232,7 @@ set_vcard(User, LServer, VCARD) ->
     LOrgName  = stringprep:tolower(OrgName),
     LOrgUnit  = stringprep:tolower(OrgUnit),
 
-    US = {LUser, LServer},
+    US = {LUser, VHost},
 
     if
 	(LUser     == error) or
@@ -252,7 +253,7 @@ set_vcard(User, LServer, VCARD) ->
 		mnesia:write(#vcard{us = US, vcard = VCARD}),
 		mnesia:write(
 		  #vcard_search{us        = US,
-				user      = {User, LServer},
+				user      = {User, VHost},
 				luser     = LUser,
 				fn        = FN,       lfn        = LFN,       
 				family    = Family,   lfamily    = LFamily,   
@@ -268,7 +269,7 @@ set_vcard(User, LServer, VCARD) ->
 			       })
 		end,
 	    mnesia:transaction(F),
-	    ejabberd_hooks:run(vcard_set, LServer, [LUser, LServer, VCARD])
+	    ejabberd_hooks:run(vcard_set, VHost, [LUser, VHost, VCARD])
     end.
 
 -define(TLFIELD(Type, Label, Var),
@@ -306,127 +307,117 @@ set_vcard(User, LServer, VCARD) ->
 
 
 
-do_route(ServerHost, From, To, Packet) ->
-    #jid{user = User, resource = Resource} = To,
-    if
-	(User /= "") or (Resource /= "") ->
-	    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
-	    ejabberd_router:route(To, From, Err);
-	true ->
-	    IQ = jlib:iq_query_info(Packet),
-	    case IQ of
-		#iq{type = Type, xmlns = ?NS_SEARCH, lang = Lang, sub_el = SubEl} ->
-		    case Type of
-			set ->
-			    XDataEl = find_xdata_el(SubEl),
-			    case XDataEl of
-				false ->
-				    Err = jlib:make_error_reply(
-					    Packet, ?ERR_BAD_REQUEST),
-				    ejabberd_router:route(To, From, Err);
-				_ ->
-				    XData = jlib:parse_xdata_submit(XDataEl),
-				    case XData of
-					invalid ->
-					    Err = jlib:make_error_reply(
-						    Packet,
-						    ?ERR_BAD_REQUEST),
-					    ejabberd_router:route(To, From,
-								  Err);
-					_ ->
-					    ResIQ =
-						IQ#iq{
-						  type = result,
-						  sub_el =
-						  [{xmlelement,
-						    "query",
-						    [{"xmlns", ?NS_SEARCH}],
-						    [{xmlelement, "x",
-						      [{"xmlns", ?NS_XDATA},
-						       {"type", "result"}],
-						      search_result(Lang, To, ServerHost, XData)
-						     }]}]},
-					    ejabberd_router:route(
-					      To, From, jlib:iq_to_xml(ResIQ))
-				    end
-			    end;
-			get ->
-			    ResIQ = IQ#iq{type = result,
-					  sub_el = [{xmlelement,
-						     "query",
-						     [{"xmlns", ?NS_SEARCH}],
-						     ?FORM(To)
-						    }]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = Type, xmlns = ?NS_DISCO_INFO, lang = Lang} ->
-		    case Type of
-			set ->
-			    Err = jlib:make_error_reply(
-				    Packet, ?ERR_NOT_ALLOWED),
-			    ejabberd_router:route(To, From, Err);
-			get ->
-			    Info = ejabberd_hooks:run_fold(
-				     disco_info, ServerHost, [],
-				     [ServerHost, ?MODULE, "", ""]),
-			    ResIQ =
-				IQ#iq{type = result,
-				      sub_el = [{xmlelement,
-						 "query",
-						 [{"xmlns", ?NS_DISCO_INFO}],
-						 [{xmlelement, "identity",
-						   [{"category", "directory"},
-						    {"type", "user"},
-						    {"name",
-						     translate:translate(Lang, "vCard User Search")}],
-						   []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_DISCO_INFO}], []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_SEARCH}], []},
-						  {xmlelement, "feature",
-						   [{"var", ?NS_VCARD}], []}
-						 ] ++ Info
-						}]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = Type, xmlns = ?NS_DISCO_ITEMS} ->
-		    case Type of
-			set ->
-			    Err = jlib:make_error_reply(
-				    Packet, ?ERR_NOT_ALLOWED),
-			    ejabberd_router:route(To, From, Err);
-			get ->
-			    ResIQ = 
-				IQ#iq{type = result,
-				      sub_el = [{xmlelement,
-						 "query",
-						 [{"xmlns", ?NS_DISCO_ITEMS}],
-						 []}]},
-			    ejabberd_router:route(To,
-						  From,
-						  jlib:iq_to_xml(ResIQ))
-		    end;
-		#iq{type = get, xmlns = ?NS_VCARD, lang = Lang} ->
-		    ResIQ = 
-			IQ#iq{type = result,
-			      sub_el = [{xmlelement,
-					 "vCard",
-					 [{"xmlns", ?NS_VCARD}],
-					 iq_get_vcard(Lang)}]},
-		    ejabberd_router:route(To,
-					  From,
-					  jlib:iq_to_xml(ResIQ));
-		_ ->
-		    Err = jlib:make_error_reply(Packet,
-						?ERR_SERVICE_UNAVAILABLE),
-		    ejabberd_router:route(To, From, Err)
-	    end
-    end.
+do_route(_VHost, From, #jid{ user = User,
+                             resource = Resource } = To, Packet, _IQ)
+  when (User /= <<"">>) or (Resource /= <<"">>) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
+    ejabberd_router:route(To, From, Err);
+
+do_route(VHost, From, To, Packet, #iq{ type = set,
+                                       xmlns = ?NS_SEARCH,
+                                       lang = Lang,
+                                       sub_el = SubEl } = IQ) ->
+    XDataEl = find_xdata_el(SubEl),
+    case XDataEl of
+        false ->
+            Err = jlib:make_error_reply(Packet, ?ERR_BAD_REQUEST),
+            ejabberd_router:route(To, From, Err);
+        _ ->
+            XData = jlib:parse_xdata_submit(XDataEl),
+            case XData of
+                invalid ->
+                    Err = jlib:make_error_reply(Packet, ?ERR_BAD_REQUEST),
+                    ejabberd_router:route(To, From, Err);
+                _ ->
+                    ResIQ =
+                        IQ#iq{
+                          type = result,
+                          sub_el =
+                              [{xmlelement,
+                                "query",
+                                [{"xmlns", ?NS_SEARCH}],
+                                [{xmlelement, "x",
+                                  [{"xmlns", ?NS_XDATA},
+                                   {"type", "result"}],
+                                  search_result(Lang, To, VHost, XData)
+                                 }]}]},
+                    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ))
+            end
+    end;
+
+do_route(_VHost, From, To, _Packet, #iq{ type = get,
+                                         xmlns = ?NS_SEARCH,
+                                         lang = Lang } = IQ) ->
+    ResIQ = IQ#iq{ type = result,
+                   sub_el = [{xmlelement,
+                              "query",
+                              [{"xmlns", ?NS_SEARCH}],
+                              ?FORM(To)
+                             }]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+do_route(_VHost, From, To, Packet, #iq{ type = set,
+                                        xmlns = ?NS_DISCO_INFO }) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_NOT_ALLOWED),
+    ejabberd_router:route(To, From, Err);
+
+do_route(VHost, From, To, _Packet, #iq{ type = get,
+                                        xmlns = ?NS_DISCO_INFO,
+                                        lang = Lang} = IQ) ->
+    Info = ejabberd_hooks:run_fold(disco_info, VHost, [], [VHost, ?MODULE, "", ""]),
+    ResIQ =
+        IQ#iq{type = result,
+              sub_el = [{xmlelement,
+                         "query",
+                         [{"xmlns", ?NS_DISCO_INFO}],
+                         [{xmlelement, "identity",
+                           [{"category", "directory"},
+                            {"type", "user"},
+                            {"name",
+                             translate:translate(Lang, "vCard User Search")}],
+                           []},
+                          {xmlelement, "feature",
+                           [{"var", ?NS_DISCO_INFO}], []},
+                          {xmlelement, "feature",
+                           [{"var", ?NS_SEARCH}], []},
+                          {xmlelement, "feature",
+                           [{"var", ?NS_VCARD}], []}
+                         ] ++ Info
+                        }]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+do_route(_VHost, From, To, Packet, #iq{ type = set,
+                                        xmlns = ?NS_DISCO_ITEMS}) ->
+                Err = jlib:make_error_reply(
+                        Packet, ?ERR_NOT_ALLOWED),
+                ejabberd_router:route(To, From, Err);
+
+do_route(_VHost, From, To, _Packet, #iq{ type = get,
+                                         xmlns = ?NS_DISCO_ITEMS} = IQ) ->
+    ResIQ =
+        IQ#iq{type = result,
+              sub_el = [{xmlelement,
+                         "query",
+                         [{"xmlns", ?NS_DISCO_ITEMS}],
+                         []}]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+do_route(_VHost, From, To, _Packet, #iq{ type = get,
+                                         xmlns = ?NS_VCARD,
+                                         lang = Lang} = IQ) ->
+    ResIQ =
+        IQ#iq{type = result,
+              sub_el = [{xmlelement,
+                         "vCard",
+                         [{"xmlns", ?NS_VCARD}],
+                         iq_get_vcard(Lang)}]},
+    ejabberd_router:route(To, From, jlib:iq_to_xml(ResIQ));
+
+do_route(_VHost, From, To, Packet, _IQ) ->
+    Err = jlib:make_error_reply(Packet, ?ERR_SERVICE_UNAVAILABLE),
+    ejabberd_router:route(To, From, Err).
+
+
 
 iq_get_vcard(Lang) ->
     [{xmlelement, "FN", [],
@@ -458,10 +449,10 @@ find_xdata_el1([_ | Els]) ->
 	{xmlelement, "field", [{"label", translate:translate(Lang, Label)},
 			       {"var", Var}], []}).
 
-search_result(Lang, JID, ServerHost, Data) ->
+search_result(Lang, JID, VHost, Data) ->
     [{xmlelement, "title", [],
       [{xmlcdata, translate:translate(Lang, "Search Results for ") ++
-	jlib:jid_to_string(JID)}]},
+	jlib:jid_to_binary(JID)}]},
      {xmlelement, "reported", [],
       [?TLFIELD("text-single", "Jabber ID", "jid"),
        ?TLFIELD("text-single", "Full Name", "fn"),
@@ -475,7 +466,7 @@ search_result(Lang, JID, ServerHost, Data) ->
        ?TLFIELD("text-single", "Email", "email"),
        ?TLFIELD("text-single", "Organization Name", "orgname"),
        ?TLFIELD("text-single", "Organization Unit", "orgunit")
-      ]}] ++ lists:map(fun record_to_item/1, search(ServerHost, Data)).
+      ]}] ++ lists:map(fun record_to_item/1, search(VHost, Data)).
 
 -define(FIELD(Var, Val),
 	{xmlelement, "field", [{"var", Var}],
@@ -502,9 +493,9 @@ record_to_item(R) ->
      }.
 
 
-search(LServer, Data) ->
-    MatchSpec = make_matchspec(LServer, Data),
-    AllowReturnAll = gen_mod:get_module_opt(LServer, ?MODULE,
+search(VHost, Data) ->
+    MatchSpec = make_matchspec(VHost, Data),
+    AllowReturnAll = gen_mod:get_module_opt(VHost, ?MODULE,
 					    allow_return_all, false),
     if
 	(MatchSpec == #vcard_search{_ = '_'}) and (not AllowReturnAll) ->
@@ -516,7 +507,7 @@ search(LServer, Data) ->
 		    ?ERROR_MSG("~p", [Reason]),
 		    [];
 		Rs ->
-		    case gen_mod:get_module_opt(LServer, ?MODULE,
+		    case gen_mod:get_module_opt(VHost, ?MODULE,
 						matches, ?JUD_MATCHES) of
 			infinity ->
 			    Rs;
@@ -532,24 +523,24 @@ search(LServer, Data) ->
     end.
 
 
-make_matchspec(LServer, Data) ->
+make_matchspec(VHost, Data) ->
     GlobMatch = #vcard_search{_ = '_'},
-    Match = filter_fields(Data, GlobMatch, LServer),
+    Match = filter_fields(Data, GlobMatch, VHost),
     Match.
 
-filter_fields([], Match, _LServer) ->
+filter_fields([], Match, _VHost) ->
     Match;
-filter_fields([{SVar, [Val]} | Ds], Match, LServer)
+filter_fields([{SVar, [Val]} | Ds], Match, VHost)
   when is_list(Val) and (Val /= "") ->
     LVal = stringprep:tolower(Val),
     NewMatch = case SVar of
                    "user" ->
-		       case gen_mod:get_module_opt(LServer, ?MODULE,
+		       case gen_mod:get_module_opt(VHost, ?MODULE,
 						   search_all_hosts, true) of
 			   true ->
 			       Match#vcard_search{luser = make_val(LVal)};
 			   false ->
-			       Host = find_my_host(LServer),
+			       Host = find_my_host(VHost),
 			       Match#vcard_search{us = {make_val(LVal), Host}}
 		       end;
                    "fn"       -> Match#vcard_search{lfn       = make_val(LVal)};
@@ -565,9 +556,9 @@ filter_fields([{SVar, [Val]} | Ds], Match, LServer)
                    "orgunit"  -> Match#vcard_search{lorgunit  = make_val(LVal)};
 		   _          -> Match
 	       end,
-    filter_fields(Ds, NewMatch, LServer);
-filter_fields([_ | Ds], Match, LServer) ->
-    filter_fields(Ds, Match, LServer).
+    filter_fields(Ds, NewMatch, VHost);
+filter_fields([_ | Ds], Match, VHost) ->
+    filter_fields(Ds, Match, VHost).
 
 make_val(Val) ->
     case lists:suffix("*", Val) of
@@ -577,14 +568,14 @@ make_val(Val) ->
 	    Val
     end.
 
-find_my_host(LServer) ->
-    Parts = string:tokens(LServer, "."),
+find_my_host(VHost) ->
+    Parts = binary:matches(VHost, <<".">>),
     find_my_host(Parts, ?MYHOSTS).
 
 find_my_host([], _Hosts) ->
     ?MYNAME;
 find_my_host([_ | Tail] = Parts, Hosts) ->
-    Domain = parts_to_string(Parts),
+    Domain = parts_to_binstring(Parts),
     case lists:member(Domain, Hosts) of
 	true ->
 	    Domain;
@@ -592,7 +583,7 @@ find_my_host([_ | Tail] = Parts, Hosts) ->
 	    find_my_host(Tail, Hosts)
     end.
 
-parts_to_string(Parts) ->
+parts_to_binstring(Parts) ->
     string:strip(lists:flatten(lists:map(fun(S) -> [S, $.] end, Parts)),
 		 right, $.).
 
