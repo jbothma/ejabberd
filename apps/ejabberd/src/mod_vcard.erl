@@ -30,7 +30,7 @@
 -behaviour(gen_mod).
 
 -export([start/2, init/3, stop/1,
-	 get_sm_features/5,
+	 get_local_features/5,
 	 process_local_iq/3,
 	 process_sm_iq/3,
 	 reindex_vcards/0,
@@ -87,7 +87,7 @@ start(VHost, Opts) ->
 				  ?MODULE, process_local_iq, IQDisc),
     gen_iq_handler:add_iq_handler(ejabberd_sm, VHost, ?NS_VCARD,
 				  ?MODULE, process_sm_iq, IQDisc),
-    ejabberd_hooks:add(disco_sm_features, VHost, ?MODULE, get_sm_features, 50),
+    ejabberd_hooks:add(disco_local_features, VHost, ?MODULE, get_local_features, 50),
     DirectoryHost = gen_mod:get_opt_host(VHost, Opts, "vjud.@HOST@"),
     Search = gen_mod:get_opt(search, Opts, true),
     register(gen_mod:get_module_proc(VHost, ?PROCNAME),
@@ -126,17 +126,18 @@ stop(VHost) ->
 			  ?MODULE, remove_user, 50),
     gen_iq_handler:remove_iq_handler(ejabberd_local, VHost, ?NS_VCARD),
     gen_iq_handler:remove_iq_handler(ejabberd_sm, VHost, ?NS_VCARD),
-    ejabberd_hooks:delete(disco_sm_features, VHost, ?MODULE, get_sm_features, 50),
+    ejabberd_hooks:delete(
+      disco_local_features, VHost, ?MODULE, get_local_features, 50),
     Proc = gen_mod:get_module_proc(VHost, ?PROCNAME),
     Proc ! stop,
     {wait, Proc}.
 
-get_sm_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
+get_local_features({error, _Error} = Acc, _From, _To, _Node, _Lang) ->
     Acc;
 
-get_sm_features(Acc, _From, _To, Node, _Lang) ->
+get_local_features(Acc, _From, _To, Node, _Lang) ->
     case Node of
-	[] ->
+	<<>> ->
 	    case Acc of
 		{result, Features} ->
 		    {result, [?NS_DISCO_INFO, ?NS_VCARD | Features]};
@@ -147,57 +148,73 @@ get_sm_features(Acc, _From, _To, Node, _Lang) ->
 	    Acc
      end.
 
-process_local_iq(_From, _To, #iq{type = Type, lang = Lang, sub_el = SubEl} = IQ) ->
-    case Type of
-	set ->
-	    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
-	get ->
-	    IQ#iq{type = result,
-		  sub_el = [{xmlelement, "vCard",
-			     [{"xmlns", ?NS_VCARD}],
-			     [{xmlelement, "FN", [],
-			       [{xmlcdata, "ejabberd"}]},
-			      {xmlelement, "URL", [],
-			       [{xmlcdata, ?EJABBERD_URI}]},
-			      {xmlelement, "DESC", [],
-			       [{xmlcdata,
-				 translate:translate(
-				   Lang,
-				   "Erlang Jabber Server") ++
-				   "\nCopyright (c) 2002-2011 ProcessOne"}]},
-			      {xmlelement, "BDAY", [],
-			       [{xmlcdata, "2002-11-16"}]}
-			     ]}]}
+process_local_iq(_From, _To, #iq{ type = set,
+                                  sub_el = SubEl } = IQ) ->
+    IQ#iq{ type = error,
+           sub_el = [SubEl, ?ERR_NOT_ALLOWED] };
+
+process_local_iq(_From, _To, #iq{ type = get,
+                                  lang = Lang } = IQ) ->
+    IQ#iq{ type = result,
+           sub_el = [{xmlelement, "vCard",
+                      [{"xmlns", ?NS_VCARD}],
+                      [{xmlelement, "FN", [],
+                        [{xmlcdata, "ejabberd"}]},
+                       {xmlelement, "URL", [],
+                        [{xmlcdata, ?EJABBERD_URI}]},
+                       {xmlelement, "DESC", [],
+                        [{xmlcdata,
+                          translate:translate(Lang,"Erlang Jabber Server") ++
+                              "\nCopyright (c) 2002-2011 ProcessOne"}]},
+                       {xmlelement, "BDAY", [],
+                        [{xmlcdata, "2002-11-16"}]}
+                      ]}]}.
+
+
+
+process_sm_iq(From, To, #iq{ type = set,
+                              sub_el = SubEl } = IQ) ->
+    #jid{ user = FromUser,
+          lserver = FromVHost} = From,
+    #jid{ user = ToUser,
+          lserver = ToVHost,
+          resource = ToResource} = To,
+    case lists:member(FromVHost, ?MYHOSTS) of
+        true when FromUser == ToUser, FromVHost == ToVHost, ToResource == <<>>;
+                  ToUser == <<>>, ToVHost == <<>> ->
+            set_vcard(FromUser, FromVHost, SubEl),
+            IQ#iq{ type = result,
+                   sub_el = [] };
+        _ ->
+            IQ#iq{ type = error,
+                   sub_el = [SubEl, ?ERR_NOT_ALLOWED]}
+    end;
+
+process_sm_iq(_From, To, #iq{ type = get,
+                              sub_el = SubEl } = IQ) ->
+    #jid{ luser = LUser,
+          lserver = LServer } = To,
+    US = {LUser, LServer},
+    F = fun() ->
+                mnesia:read({vcard, US})
+        end,
+    case mnesia:transaction(F) of
+        {atomic, []} ->
+            IQ#iq{ type = error,
+                   sub_el = [SubEl, ?ERR_SERVICE_UNAVAILABLE] };
+        {atomic, Rs} ->
+            Els = lists:map(fun(R) ->
+                                    R#vcard.vcard
+                            end, Rs),
+            IQ#iq{ type = result,
+                   sub_el = Els };
+        {aborted, Reason} ->
+            ?ERROR_MSG("vCard lookup failed in process_sm_iq: ~p", [Reason]),
+            IQ#iq{ type = error,
+                   sub_el = [SubEl, ?ERR_INTERNAL_SERVER_ERROR] }
     end.
 
 
-process_sm_iq(From, To, #iq{type = Type, sub_el = SubEl} = IQ) ->
-    case Type of
-	set ->
-	    #jid{user = User, lserver = LServer} = From,
-	    case lists:member(LServer, ?MYHOSTS) of
-		true ->
-		    set_vcard(User, LServer, SubEl),
-		    IQ#iq{type = result, sub_el = []};
-		false ->
-		    IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]}
-	    end;
-	get ->
-	    #jid{luser = LUser, lserver = LServer} = To,
-	    US = {LUser, LServer},
-	    F = fun() ->
-			mnesia:read({vcard, US})
-		end,
-	    Els = case mnesia:transaction(F) of
-		      {atomic, Rs} ->
-			  lists:map(fun(R) ->
-					    R#vcard.vcard
-				    end, Rs);
-		      {aborted, _Reason} ->
-			  []
-		  end,
-	    IQ#iq{type = result, sub_el = Els}
-    end.
 
 set_vcard(User, VHost, VCARD) ->
     FN       = xml:get_path_s(VCARD, [{elem, "FN"},                     cdata]),
@@ -255,20 +272,20 @@ set_vcard(User, VHost, VCARD) ->
 		  #vcard_search{us        = US,
 				user      = {User, VHost},
 				luser     = LUser,
-				fn        = FN,       lfn        = LFN,       
-				family    = Family,   lfamily    = LFamily,   
-				given     = Given,    lgiven     = LGiven,    
-				middle    = Middle,   lmiddle    = LMiddle,   
-				nickname  = Nickname, lnickname  = LNickname, 
-				bday      = BDay,     lbday      = LBDay,     
-				ctry      = CTRY,     lctry      = LCTRY,     
-				locality  = Locality, llocality  = LLocality, 
-				email     = EMail,    lemail     = LEMail,    
-				orgname   = OrgName,  lorgname   = LOrgName,  
-				orgunit   = OrgUnit,  lorgunit   = LOrgUnit   
+				fn        = FN,       lfn        = LFN,
+				family    = Family,   lfamily    = LFamily,
+				given     = Given,    lgiven     = LGiven,
+				middle    = Middle,   lmiddle    = LMiddle,
+				nickname  = Nickname, lnickname  = LNickname,
+				bday      = BDay,     lbday      = LBDay,
+				ctry      = CTRY,     lctry      = LCTRY,
+				locality  = Locality, llocality  = LLocality,
+				email     = EMail,    lemail     = LEMail,
+				orgname   = OrgName,  lorgname   = LOrgName,
+				orgunit   = OrgUnit,  lorgunit   = LOrgUnit
 			       })
 		end,
-	    mnesia:transaction(F),
+	    {atomic, _} = mnesia:transaction(F),
 	    ejabberd_hooks:run(vcard_set, VHost, [LUser, VHost, VCARD])
     end.
 
