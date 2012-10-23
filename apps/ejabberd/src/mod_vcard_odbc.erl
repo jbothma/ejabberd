@@ -542,51 +542,54 @@ search(LServer, Data) ->
 make_restriction_sql(LServer, Data) ->
     filter_fields(Data, "", LServer).
 
-filter_fields([], Match, _LServer) ->
-    case Match of
+filter_fields([], RestrictionSQL, _LServer) ->
+    case RestrictionSQL of
 	"" ->
 	    "";
+        <<>> ->
+            <<>>;
 	_ ->
-	    [" where ", Match]
+	    [" where ", RestrictionSQL]
     end;
-filter_fields([{SVar, [Val]} | Ds], Match, LServer)
-  when is_list(Val) and (Val /= "") ->
+filter_fields([{SVar, [Val]} | Ds], RestrictionSQL, LServer)
+  when is_binary(Val) and (Val /= <<"">>) ->
     LVal = stringprep:tolower(Val),
-    NewMatch = case SVar of
-                   "user"     -> make_val(Match, "lusername", LVal);
-                   "fn"       -> make_val(Match, "lfn",       LVal);
-                   "last"     -> make_val(Match, "lfamily",   LVal);
-                   "first"    -> make_val(Match, "lgiven",    LVal);
-                   "middle"   -> make_val(Match, "lmiddle",   LVal);
-                   "nick"     -> make_val(Match, "lnickname", LVal);
-                   "bday"     -> make_val(Match, "lbday",     LVal);
-                   "ctry"     -> make_val(Match, "lctry",     LVal);
-                   "locality" -> make_val(Match, "llocality", LVal);
-                   "email"    -> make_val(Match, "lemail",    LVal);
-                   "orgname"  -> make_val(Match, "lorgname",  LVal);
-                   "orgunit"  -> make_val(Match, "lorgunit",  LVal);
-		   _          -> Match
-	       end,
-    filter_fields(Ds, NewMatch, LServer);
-filter_fields([_ | Ds], Match, LServer) ->
-    filter_fields(Ds, Match, LServer).
+    NewRestrictionSQL =
+        case SVar of
+            <<"user">>     -> make_val(RestrictionSQL, "lusername", LVal);
+            <<"fn">>       -> make_val(RestrictionSQL, "lfn",       LVal);
+            <<"last">>     -> make_val(RestrictionSQL, "lfamily",   LVal);
+            <<"first">>    -> make_val(RestrictionSQL, "lgiven",    LVal);
+            <<"middle">>   -> make_val(RestrictionSQL, "lmiddle",   LVal);
+            <<"nick">>     -> make_val(RestrictionSQL, "lnickname", LVal);
+            <<"bday">>     -> make_val(RestrictionSQL, "lbday",     LVal);
+            <<"ctry">>     -> make_val(RestrictionSQL, "lctry",     LVal);
+            <<"locality">> -> make_val(RestrictionSQL, "llocality", LVal);
+            <<"email">>    -> make_val(RestrictionSQL, "lemail",    LVal);
+            <<"orgname">>  -> make_val(RestrictionSQL, "lorgname",  LVal);
+            <<"orgunit">>  -> make_val(RestrictionSQL, "lorgunit",  LVal);
+            _              -> RestrictionSQL
+        end,
+    filter_fields(Ds, NewRestrictionSQL, LServer);
+filter_fields([_ | Ds], RestrictionSQL, LServer) ->
+    filter_fields(Ds,RestrictionSQL , LServer).
 
-make_val(Match, Field, Val) ->
+make_val(RestrictionSQL, Field, Val) ->
     Condition =
-	case lists:suffix("*", Val) of
-	    true ->
+	case binary:last(Val) of
+	    <<"*">> ->
 		Val1 = lists:sublist(Val, length(Val) - 1),
-		SVal = ejabberd_odbc:escape_like(Val1) ++ "%",
+		SVal = [ejabberd_odbc:escape_like(Val1), "%"],
 		[Field, " LIKE '", SVal, "'"];
 	    _ ->
 		SVal = ejabberd_odbc:escape(Val),
 		[Field, " = '", SVal, "'"]
 	end,
-    case Match of
+    case RestrictionSQL of
 	"" ->
 	    Condition;
 	_ ->
-	    [Match, " and ", Condition]
+	    [RestrictionSQL, " and ", Condition]
     end.
 
 
