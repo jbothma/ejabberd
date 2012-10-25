@@ -47,9 +47,9 @@ stop(Host) ->
 %% Hooks
 %%====================================================================
 
-update_presence({xmlelement, "presence", Attrs, _Els} = Packet, User, Host) ->
-    case xml:get_attr_s("type", Attrs) of
-        [] ->
+update_presence({xmlelement, <<"presence">>, Attrs, _Els} = Packet, User, Host) ->
+    case xml:get_attr_s(<<"type">>, Attrs) of
+        <<>> ->
 	    presence_with_xupdate(Packet, User, Host);
         _ ->
             Packet
@@ -59,8 +59,9 @@ update_presence(Packet, _User, _Host) ->
 
 vcard_set(LUser, LServer, VCARD) ->
     US = {LUser, LServer},
-    case xml:get_path_s(VCARD, [{elem, "PHOTO"}, {elem, "BINVAL"}, cdata]) of
-	[] ->
+    case xml:get_path_s(VCARD, [{elem, <<"PHOTO">>},
+                                {elem, <<"BINVAL">>}, cdata]) of
+	<<>> ->
 	    remove_xupdate(LUser, LServer);
 	BinVal ->
 	    add_xupdate(LUser, LServer, sha:sha(jlib:decode_base64(BinVal)))
@@ -75,7 +76,7 @@ add_xupdate(LUser, LServer, Hash) ->
     F = fun() ->
                 mnesia:write(#vcard_xupdate{us = {LUser, LServer}, hash = Hash})
         end,
-    mnesia:transaction(F).
+    {atomic, _} = mnesia:transaction(F).
 
 get_xupdate(LUser, LServer) ->
     case mnesia:dirty_read(vcard_xupdate, {LUser, LServer}) of
@@ -89,21 +90,21 @@ remove_xupdate(LUser, LServer) ->
     F = fun() ->
                 mnesia:delete({vcard_xupdate, {LUser, LServer}})
         end,
-    mnesia:transaction(F).
+    {atomic, _} = mnesia:transaction(F).
 
 %%%----------------------------------------------------------------------
 %%% Presence stanza rebuilding
 %%%----------------------------------------------------------------------
 
-presence_with_xupdate({xmlelement, "presence", Attrs, Els}, User, Host) ->
+presence_with_xupdate({xmlelement, <<"presence">>, Attrs, Els}, User, Host) ->
     XPhotoEl = build_xphotoel(User, Host),
     Els2 = presence_with_xupdate2(Els, [], XPhotoEl),
-    {xmlelement, "presence", Attrs, Els2}.
+    {xmlelement, <<"presence">>, Attrs, Els2}.
 
 presence_with_xupdate2([], Els2, XPhotoEl) ->
     lists:reverse([XPhotoEl | Els2]);
 %% This clause assumes that the x element contains only the XMLNS attribute:
-presence_with_xupdate2([{xmlelement, "x", [{"xmlns", ?NS_VCARD_UPDATE}], _}
+presence_with_xupdate2([{xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_VCARD_UPDATE}], _}
 			| Els], Els2, XPhotoEl) ->
     presence_with_xupdate2(Els, Els2, XPhotoEl);
 presence_with_xupdate2([El | Els], Els2, XPhotoEl) ->
@@ -117,5 +118,5 @@ build_xphotoel(User, Host) ->
 		      _ ->
 			  []
 		  end,
-    PhotoEl = [{xmlelement, "photo", [], PhotoSubEls}],
-    {xmlelement, "x", [{"xmlns", ?NS_VCARD_UPDATE}], PhotoEl}.
+    PhotoEl = [{xmlelement, <<"photo">>, [], PhotoSubEls}],
+    {xmlelement, <<"x">>, [{<<"xmlns">>, ?NS_VCARD_UPDATE}], PhotoEl}.
